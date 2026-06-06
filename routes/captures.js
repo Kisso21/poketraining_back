@@ -1,0 +1,142 @@
+import { Router } from "express";
+import { run, get, all, GEN1_POKEMONS, GEN2_POKEMONS, GEN3_POKEMONS, GEN4_POKEMONS } from "../db.js";
+import { checkAchievements } from "./achievements.js";
+
+const router = Router();
+const CAPTURABLE_SET = new Set([...GEN1_POKEMONS, ...GEN2_POKEMONS, ...GEN3_POKEMONS, ...GEN4_POKEMONS, "MissingNo"]);
+const GEN34_SET = new Set([...GEN3_POKEMONS, ...GEN4_POKEMONS]);
+
+function stateMatchesCapture(rawState, pokemonName) {
+  if (!rawState) return false;
+  let state;
+  try { state = JSON.parse(rawState); } catch { return false; }
+
+  const candidateName = state.secret || state.targetName;
+  if (candidateName !== pokemonName || state.captureClaimed === true) return false;
+
+  return state.finished === true
+    || state.bloque === true
+    || state.phase === "finished"
+    || state.phase === "gameover";
+}
+
+async function getCaptureState(userId, pokemonName) {
+  const states = await all(
+    `SELECT id, state FROM game_states WHERE user_id = ?`,
+    [userId]
+  );
+  return states.find(row => stateMatchesCapture(row.state, pokemonName)) || null;
+}
+
+async function consumeCaptureState(row) {
+  if (!row?.id) return;
+  let state;
+  try { state = JSON.parse(row.state || "{}"); } catch { return; }
+  state.captureClaimed = true;
+  await run(`UPDATE game_states SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [JSON.stringify(state), row.id]);
+}
+
+// GET /api/captures/:userId
+router.get("/captures/:userId", async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT pokemon_name AS pokemonName, is_shiny AS isShiny FROM captures WHERE user_id = ?`,
+      [req.user.id]
+    );
+    res.json({ captures: rows });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/capture
+router.post("/capture", async (req, res) => {
+  let { pokemonName, isShiny = 0 } = req.body;
+  const userId = req.user.id;
+  isShiny = isShiny ? 1 : 0;
+  if (!pokemonName) return res.status(400).json({ error: "Données manquantes" });
+  pokemonName = String(pokemonName).trim();
+  if (!CAPTURABLE_SET.has(pokemonName)) return res.status(400).json({ error: "Pokémon invalide" });
+
+  try {
+    const user = await get(`SELECT id FROM users WHERE id = ?`, [userId]);
+    if (!user) return res.status(404).json({ error: "Utilisateur introuvable" });
+
+    if (GEN34_SET.has(pokemonName)) {
+      const ach = await get(
+        `SELECT claimed FROM achievements WHERE user_id = ? AND achievement_id = 'unlock-gen3-4'`,
+        [userId]
+      );
+      if (!ach || !Number(ach.claimed)) {
+        return res.status(403).json({ error: "Générations 3 & 4 non débloquées" });
+      }
+    }
+
+    const captureState = await getCaptureState(userId, pokemonName);
+    if (!captureState) return res.status(403).json({ error: "Capture non autorisée pour cette partie" });
+
+    const result = await run(
+      `INSERT OR IGNORE INTO captures (user_id, pokemon_name, is_shiny) VALUES (?,?,?)`,
+      [userId, pokemonName, isShiny]
+    );
+    await consumeCaptureState(captureState);
+
+    if (result.changes === 0) {
+      // Doublon → ajout en réserve revendable
+      await run(
+        `INSERT INTO pokemon_reserve (user_id, pokemon_name, is_shiny) VALUES (?,?,?)`,
+        [userId, pokemonName, isShiny]
+      );
+      return res.json({ success: true, addedToReserve: true, message: pokemonName + " ajouté à ta réserve !", isShiny });
+    }
+
+    const newAchievements = await checkAchievements(userId).catch(() => []);
+    res.json({ success: true, addedToReserve: false, message: pokemonName + " capturé !", isShiny, newAchievements });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// GET /api/pokedex/:userId
+router.get("/pokedex/:userId", async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT pokemon_name AS pokemonName, is_shiny AS isShiny FROM captures WHERE user_id = ?`,
+      [req.user.id]
+    );
+    const pokedex = {};
+    rows.forEach(r => {
+      const name = String(r.pokemonName).trim();
+      if (!pokedex[name]) pokedex[name] = { normal: false, shiny: false };
+      if (Number(r.isShiny) === 0) pokedex[name].normal = true;
+      if (Number(r.isShiny) === 1) pokedex[name].shiny  = true;
+    });
+    res.json({ captured: rows.length, total: 251, pokemons: pokedex });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// GET /api/leaderboard
+router.get("/leaderboard", async (req, res) => {
+  try {
+    const rows = await all(`
+      SELECT u.id, u.username,
+             COUNT(c.id)                                    AS captures,
+             SUM(CASE WHEN c.is_shiny = 1 THEN 1 ELSE 0 END) AS shinyCaptures,
+             COALESCE(i.pokedollars, 0)                     AS pokedollars
+      FROM users u
+      LEFT JOIN captures c  ON c.user_id  = u.id
+      LEFT JOIN inventory i ON i.user_id  = u.id
+      WHERE u.role != 'admin'
+      GROUP BY u.id
+      ORDER BY captures DESC, i.pokedollars DESC
+      LIMIT 50
+    `);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+export default router;
