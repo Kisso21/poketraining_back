@@ -1,5 +1,8 @@
 import { Router } from "express";
 import bcrypt from "bcrypt";
+import os from "os";
+import fs from "fs";
+import { execSync } from "child_process";
 import { run, get, all, GEN1_POKEMONS } from "../db.js";
 import { verifyAdmin, ALLOWED_ITEM_COLUMNS } from "../middleware/auth.js";
 import { emitToUser } from "../socket.js";
@@ -472,6 +475,48 @@ router.get("/stats", async (req, res) => {
   } catch { res.status(500).json({ error: "Erreur serveur" }); }
 });
 
+// GET /api/admin/server-stats
+router.get("/server-stats", (req, res) => {
+  try {
+    // Disque
+    const dfLine = execSync("df -B1 /").toString().trim().split("\n")[1].split(/\s+/);
+    const diskTotal = parseInt(dfLine[1]);
+    const diskUsed  = parseInt(dfLine[2]);
+    const diskFree  = parseInt(dfLine[3]);
+
+    // DB
+    const dbPath = process.env.DB_PATH || "./users.db";
+    let dbSize = 0;
+    try { dbSize = fs.statSync(dbPath).size; } catch {}
+
+    // Mémoire
+    const memTotal = os.totalmem();
+    const memFree  = os.freemem();
+    const memUsed  = memTotal - memFree;
+
+    // CPU load average
+    const [load1, load5, load15] = os.loadavg();
+
+    // Uptime
+    const sysUptime  = os.uptime();
+    const procUptime = process.uptime();
+
+    // Connexions actives (nombre de fichiers ouverts, approximation)
+    const cpuCount = os.cpus().length;
+
+    res.json({
+      disk:    { total: diskTotal, used: diskUsed, free: diskFree },
+      memory:  { total: memTotal,  used: memUsed,  free: memFree  },
+      db:      { size: dbSize },
+      cpu:     { load1, load5, load15, cores: cpuCount },
+      uptime:  { system: sysUptime, process: procUptime },
+      node:    process.version,
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur lecture serveur" });
+  }
+});
+
 // POST /api/admin/game/resetglobal  — reset un cooldown pour TOUS les joueurs
 router.post("/game/resetglobal", async (req, res) => {
   const { gameType } = req.body;
@@ -489,8 +534,14 @@ router.post("/game/resetglobal", async (req, res) => {
 router.get("/users", async (req, res) => {
   try {
     const users = await all(
-      `SELECT u.id, u.username, u.role, COALESCE(i.pokedollars, 0) as pokedollars
-       FROM users u LEFT JOIN inventory i ON i.user_id = u.id
+      `SELECT u.id, u.username, u.role, u.last_game_type, u.last_game_at,
+              COALESCE(i.pokedollars, 0) as pokedollars,
+              COALESCE(SUM(CASE WHEN c.is_shiny = 0 THEN 1 ELSE 0 END), 0) as normal_count,
+              COALESCE(SUM(CASE WHEN c.is_shiny = 1 THEN 1 ELSE 0 END), 0) as shiny_count
+       FROM users u
+       LEFT JOIN inventory i ON i.user_id = u.id
+       LEFT JOIN captures c ON c.user_id = u.id
+       GROUP BY u.id
        ORDER BY u.id DESC`
     );
     res.json(users);

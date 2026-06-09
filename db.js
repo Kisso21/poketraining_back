@@ -131,6 +131,11 @@ export async function initDB() {
   try { await dbRun(`ALTER TABLE users ADD COLUMN avatar TEXT`); } catch {}
   // Email vérifié — 1 pour les comptes existants, 0 pour les nouveaux
   try { await dbRun(`ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1`); } catch {}
+  // Dernière connexion
+  try { await dbRun(`ALTER TABLE users ADD COLUMN last_login TIMESTAMP`); } catch {}
+  // Dernier jeu terminé
+  try { await dbRun(`ALTER TABLE users ADD COLUMN last_game_type TEXT`); } catch {}
+  try { await dbRun(`ALTER TABLE users ADD COLUMN last_game_at TIMESTAMP`); } catch {}
 
   // Tokens de vérification d'email (valides 24h)
   await dbRun(`CREATE TABLE IF NOT EXISTS email_verification_tokens (
@@ -348,6 +353,17 @@ export async function initDB() {
   )`);
 
   // Index
+  // Votes de sondage
+  await dbRun(`CREATE TABLE IF NOT EXISTS poll_votes (
+    event_id     INTEGER NOT NULL,
+    user_id      INTEGER NOT NULL,
+    option_index INTEGER NOT NULL,
+    voted_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (event_id, user_id),
+    FOREIGN KEY (event_id) REFERENCES events(id),
+    FOREIGN KEY (user_id)  REFERENCES users(id)
+  )`);
+
   await dbRun(`CREATE INDEX IF NOT EXISTS idx_captures_user      ON captures(user_id)`);
   await dbRun(`CREATE INDEX IF NOT EXISTS idx_reserve_user       ON pokemon_reserve(user_id)`);
   await dbRun(`CREATE INDEX IF NOT EXISTS idx_game_states_user   ON game_states(user_id, game_type)`);

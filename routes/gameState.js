@@ -66,6 +66,12 @@ router.post("/game-state/:userId/:gameType", async (req, res) => {
        DO UPDATE SET state = excluded.state, updated_at = CURRENT_TIMESTAMP`,
       [req.user.id, gameType, JSON.stringify(state)]
     );
+    if (state.finished === true) {
+      await run(
+        `UPDATE users SET last_game_type = ?, last_game_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [gameType, req.user.id]
+      );
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
@@ -124,7 +130,7 @@ router.post("/game/reset", async (req, res) => {
         `INSERT INTO game_states (user_id, game_type, state, next_available_at)
          VALUES (?,?,?,?)
          ON CONFLICT(user_id, game_type)
-         DO UPDATE SET state = excluded.state, next_available_at = excluded.next_available_at, updated_at = CURRENT_TIMESTAMP`,
+         DO UPDATE SET next_available_at = excluded.next_available_at, updated_at = CURRENT_TIMESTAMP`,
         [req.user.id, gameType, JSON.stringify({ reset: true }), nextAvailableAt]
       );
     }

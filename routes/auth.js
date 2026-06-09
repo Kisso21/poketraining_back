@@ -119,6 +119,8 @@ router.post("/login", async (req, res) => {
       { expiresIn: "30d" }
     );
 
+    run(`UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?`, [user.id]).catch(() => {});
+
     return res.json({
       success:     true,
       token,
@@ -150,6 +152,7 @@ router.post("/refresh", async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: "30d" }
     );
+    run(`UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?`, [payload.id]).catch(() => {});
     res.json({ token: newToken, role });
   } catch {
     res.status(401).json({ error: "Token invalide ou expiré" });

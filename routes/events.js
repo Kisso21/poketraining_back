@@ -56,7 +56,7 @@ router.post("/create", verifyAdmin, async (req, res) => {
   const { type, title, description, rewardData = {}, durationSeconds } = req.body;
   if (!type || !title) return res.status(400).json({ error: "type et title requis" });
 
-  const VALID_TYPES = ["premier_clic", "pluie", "annonce", "double_xp", "devinette", "tirage", "pokemon_rare"];
+  const VALID_TYPES = ["premier_clic", "pluie", "annonce", "double_xp", "devinette", "tirage", "pokemon_rare", "sondage"];
   if (!VALID_TYPES.includes(type)) return res.status(400).json({ error: "Type invalide" });
 
   try {
@@ -215,6 +215,55 @@ router.post("/answer", verifyToken, async (req, res) => {
     getIO()?.emit("event:claimed", { eventId, winner: username, rewardData: publicRd });
     getIO()?.emit("event:end",     { reason: "claimed", winner: username });
     res.json({ success: true, winner: username, rewardData: publicRd });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// ── POST /api/events/vote (sondage) ────────────────────────────────
+router.post("/vote", verifyToken, async (req, res) => {
+  const { eventId, optionIndex } = req.body;
+  const userId = req.user.id;
+  if (optionIndex === undefined || optionIndex === null) return res.status(400).json({ error: "optionIndex requis" });
+  try {
+    const event = await get(`SELECT * FROM events WHERE id=? AND type='sondage' AND is_active=1`, [eventId]);
+    if (!event) return res.status(409).json({ error: "Sondage terminé ou introuvable" });
+
+    const rd      = JSON.parse(event.reward_data || "{}");
+    const options = rd.options || [];
+    if (optionIndex < 0 || optionIndex >= options.length) return res.status(400).json({ error: "Option invalide" });
+
+    try {
+      await run(`INSERT INTO poll_votes (event_id, user_id, option_index) VALUES (?,?,?)`, [eventId, userId, optionIndex]);
+    } catch {
+      return res.status(409).json({ error: "Tu as déjà voté !" });
+    }
+
+    getIO()?.emit("poll:vote", { eventId });
+    res.json({ success: true });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// ── GET /api/events/poll-results/:eventId (admin) ──────────────────
+router.get("/poll-results/:eventId", verifyAdmin, async (req, res) => {
+  try {
+    const event = await get(`SELECT * FROM events WHERE id=? AND type='sondage'`, [req.params.eventId]);
+    if (!event) return res.status(404).json({ error: "Sondage introuvable" });
+
+    const rd      = JSON.parse(event.reward_data || "{}");
+    const options = rd.options || [];
+
+    const rows  = await all(`SELECT option_index, COUNT(*) as count FROM poll_votes WHERE event_id=? GROUP BY option_index`, [req.params.eventId]);
+    const votes = options.map((_, i) => (rows.find(r => r.option_index === i)?.count || 0));
+    const total = votes.reduce((a, b) => a + b, 0);
+
+    res.json({ options, votes, total });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// ── GET /api/events/my-vote/:eventId (joueur connecté) ─────────────
+router.get("/my-vote/:eventId", verifyToken, async (req, res) => {
+  try {
+    const row = await get(`SELECT option_index FROM poll_votes WHERE event_id=? AND user_id=?`, [req.params.eventId, req.user.id]);
+    res.json({ voted: !!row, optionIndex: row?.option_index ?? null });
   } catch { res.status(500).json({ error: "Erreur serveur" }); }
 });
 

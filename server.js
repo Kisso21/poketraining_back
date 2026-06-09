@@ -8,7 +8,7 @@ import { Server as SocketIO } from "socket.io";
 import { transporter }       from "./mailer.js";
 import https                 from "https";
 
-import { initDB, get } from "./db.js";
+import { initDB, get, run } from "./db.js";
 import { setIO }       from "./socket.js";
 import { verifyToken, verifyAdmin, optionalToken } from "./middleware/auth.js";
 import authRoutes        from "./routes/auth.js";
@@ -87,12 +87,18 @@ app.post("/api/support", express.json(), async (req, res) => {
   const { username, subject, message } = req.body;
   if (!subject || !message) return res.status(400).json({ error: "Sujet et message obligatoires" });
   try {
-    await transporter.sendMail({
+    const row        = username ? await get(`SELECT email FROM users WHERE username = ?`, [username]) : null;
+    const playerMail = row?.email || null;
+
+    const mailOptions = {
       from:    `"PokéTraining Support" <${process.env.SMTP_USER}>`,
       to:      process.env.SMTP_USER,
       subject: `[Support] ${subject} (par ${username || "Anonyme"})`,
-      text:    `Utilisateur: ${username || "Anonyme"}\nSujet: ${subject}\n\nMessage:\n${message}`,
-    });
+      text:    `Utilisateur : ${username || "Anonyme"}\nEmail : ${playerMail || "non renseigné"}\nSujet : ${subject}\n\nMessage :\n${message}`,
+    };
+    if (playerMail) mailOptions.replyTo = playerMail;
+
+    await transporter.sendMail(mailOptions);
     res.json({ success: true });
   } catch (err) {
     console.error("Erreur mail:", err);
@@ -103,7 +109,12 @@ app.post("/api/support", express.json(), async (req, res) => {
 // ─── Routes ───────────────────────────────────────────────────────
 // Publiques (sans token)
 app.use("/api",          authRoutes);    // /login + /register
-app.get("/api/ping", (_, res) => res.json({ status: "ok" }));
+app.get("/api/ping", optionalToken, (req, res) => {
+  if (req.user?.id) {
+    run(`UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?`, [req.user.id]).catch(() => {});
+  }
+  res.json({ status: "ok" });
+});
 app.get("/api/leaderboard", async (req, res) => {
   const { all } = await import("./db.js");
   try {
