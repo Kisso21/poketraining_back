@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { run, get, all } from "../db.js";
+import { checkAchievements } from "./achievements.js";
 
 const router = Router();
 
@@ -32,12 +33,23 @@ router.get("/:username", async (req, res) => {
       [req.user.username]
     );
     const rowMap = Object.fromEntries((rows || []).map(r => [r.arene, r]));
+
+    // Charger les badges réellement obtenus en base
+    const userId = await get(`SELECT id FROM users WHERE username = ?`, [req.user.username]);
+    const badgeRows = userId ? await all(
+      `SELECT badge FROM user_badges WHERE user_id = ? AND unlocked = 1`,
+      [userId.id]
+    ) : [];
+    const badgeSet = new Set(badgeRows.map(b => b.badge));
+
     const result = ARENE_CONFIG.map((cfg, i) => {
       const row = rowMap[cfg.id];
+      // defeated est true si soit l'arène a été vaincue, soit le badge existe en base
+      const defeated = (row ? !!row.defeated : false) || (cfg.badge ? badgeSet.has(cfg.badge) : false);
       return {
         ...cfg,
         unlocked:   row ? !!row.unlocked   : i === 0,
-        defeated:   row ? !!row.defeated   : false,
+        defeated,
         inProgress: row ? !!row.in_progress : false,
         lastTry:    row?.last_try ? row.last_try.replace(' ', 'T') + 'Z' : null,
       };
@@ -109,6 +121,7 @@ router.post("/victory/:username", async (req, res) => {
           `UPDATE user_badges SET unlocked=1, date_obtained=datetime('now') WHERE user_id=? AND badge=?`,
           [uRow.id, cfg.badge]
         );
+        checkAchievements(uRow.id).catch(() => {});
       }
     }
 

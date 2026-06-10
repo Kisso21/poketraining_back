@@ -2,6 +2,7 @@ import { Router } from "express";
 import { run, get } from "../db.js";
 import { checkCasinoUnlock } from "./achievements.js";
 import { addToJackpot } from "./jackpot.js";
+import { getIO } from "../socket.js";
 
 const router = Router();
 const DAILY_LIMIT = 5000;
@@ -49,6 +50,7 @@ router.post("/reward", async (req, res) => {
       const result = await creditDailyPokedollars(userId, amount, today, DAILY_LIMIT);
       if (result.credited <= 0) return res.status(400).json({ error: "⚠️ Limite quotidienne atteinte !" });
       const inv = await get(`SELECT pokedollars, pokeball, superball, hyperball, masterball, resetball, superbonbon, potion, lootbox FROM inventory WHERE user_id = ?`, [userId]);
+      getIO()?.emit("sync:inventory", { userId, inventory: inv });
       return res.json({ success: true, inventory: inv, credited: result.credited, capped: result.capped });
     }
 
@@ -57,6 +59,7 @@ router.post("/reward", async (req, res) => {
       const result = await creditDailyPokedollars(userId, safeAmount, today, 100000);
       if (result.credited <= 0) return res.status(400).json({ error: "Limite journalière atteinte" });
       const inv = await get(`SELECT pokedollars, pokeball, superball, hyperball, masterball, resetball, superbonbon, potion, lootbox FROM inventory WHERE user_id = ?`, [userId]);
+      getIO()?.emit("sync:inventory", { userId, inventory: inv });
       return res.json({ success: true, inventory: inv, credited: result.credited, capped: result.capped });
     }
 
@@ -64,6 +67,7 @@ router.post("/reward", async (req, res) => {
     if (amount > MAX_ITEM_REWARD) return res.status(400).json({ error: "Quantité trop élevée" });
     await run(`UPDATE inventory SET ${rewardType} = ${rewardType} + ? WHERE user_id = ?`, [amount, userId]);
     const inv = await get(`SELECT pokedollars, pokeball, superball, hyperball, masterball, resetball, superbonbon, potion, lootbox FROM inventory WHERE user_id = ?`, [userId]);
+    getIO()?.emit("sync:inventory", { userId, inventory: inv });
     return res.json({ success: true, inventory: inv });
   } catch (err) {
     console.error("Erreur reward:", err);
@@ -119,6 +123,7 @@ router.post("/pokedollars", async (req, res) => {
       await run(`UPDATE inventory SET pokedollars = COALESCE(pokedollars,0) + ? WHERE user_id = ?`, [pokedollars, userId]);
       addToJackpot(Math.max(1, Math.round(Math.abs(pokedollars) * 0.05))).catch(() => {});
       const row = await get(`SELECT pokedollars FROM inventory WHERE user_id = ?`, [userId]);
+      getIO()?.emit("sync:inventory", { userId, inventory: { pokedollars: row.pokedollars } });
       return res.json({ success: true, pokedollars: row.pokedollars, appliedBonus: false, gained: pokedollars });
     }
 
@@ -127,6 +132,7 @@ router.post("/pokedollars", async (req, res) => {
       await run(`UPDATE inventory SET pokedollars = COALESCE(pokedollars,0) + ? WHERE user_id = ?`, [pokedollars, userId]);
       const row = await get(`SELECT pokedollars FROM inventory WHERE user_id = ?`, [userId]);
       checkCasinoUnlock(userId, row.pokedollars).catch(() => {});
+      getIO()?.emit("sync:inventory", { userId, inventory: { pokedollars: row.pokedollars } });
       return res.json({ success: true, pokedollars: row.pokedollars, appliedBonus: false, gained: pokedollars });
     }
 
@@ -144,12 +150,14 @@ router.post("/pokedollars", async (req, res) => {
         return res.status(400).json({ error: "Pas assez de Pokédollars" });
       await run(`UPDATE inventory SET pokedollars = COALESCE(pokedollars,0) + ? WHERE user_id = ?`, [requestedGain, userId]);
       const row = await get(`SELECT pokedollars FROM inventory WHERE user_id = ?`, [userId]);
+      getIO()?.emit("sync:inventory", { userId, inventory: { pokedollars: row.pokedollars } });
       return res.json({ success: true, pokedollars: row.pokedollars, appliedBonus: false, gained: requestedGain });
     }
 
     await run(`UPDATE inventory SET pokedollars = COALESCE(pokedollars,0) + ? WHERE user_id = ?`, [requestedGain, userId]);
     const row = await get(`SELECT pokedollars FROM inventory WHERE user_id = ?`, [userId]);
     checkCasinoUnlock(userId, row.pokedollars).catch(() => {});
+    getIO()?.emit("sync:inventory", { userId, inventory: { pokedollars: row.pokedollars } });
     res.json({ success: true, pokedollars: row.pokedollars, appliedBonus: shouldBonus, gained: requestedGain });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });

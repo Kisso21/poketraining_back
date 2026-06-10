@@ -828,7 +828,7 @@ export async function checkAchievements(userId) {
     // PokéVersus : Badge Roche + Badge Cascade obtenus
     if (!unlockedSet.has("unlock-versus")) {
       const badgeRow = await get(
-        `SELECT COUNT(*) as cnt FROM user_badges WHERE user_id = ? AND badge IN ('Badge Roche', 'Badge Cascade')`,
+        `SELECT COUNT(*) as cnt FROM user_badges WHERE user_id = ? AND badge IN ('Badge Roche', 'Badge Cascade') AND unlocked = 1`,
         [userId]
       );
       if ((badgeRow?.cnt || 0) >= 2) toUnlock.push("unlock-versus");
@@ -868,7 +868,7 @@ export async function checkAchievements(userId) {
     }
     if (!unlockedSet.has("unlock-versus")) {
       const badgeRow = await get(
-        `SELECT COUNT(*) as cnt FROM user_badges WHERE user_id = ? AND badge IN ('Badge Roche', 'Badge Cascade')`,
+        `SELECT COUNT(*) as cnt FROM user_badges WHERE user_id = ? AND badge IN ('Badge Roche', 'Badge Cascade') AND unlocked = 1`,
         [userId]
       );
       if ((badgeRow?.cnt || 0) >= 2) toUnlock.push("unlock-versus");
@@ -942,6 +942,15 @@ router.post("/claim", async (req, res) => {
     );
     if (!row || row.unlocked === 0) return res.status(400).json({ error: "Succès non débloqué" });
     if (row.claimed === 1)          return res.status(400).json({ error: "Récompense déjà récupérée" });
+
+    // Validation supplémentaire pour unlock-versus : vérifier que les 2 badges sont réellement obtenus
+    if (achievementId === "unlock-versus") {
+      const badgeRow = await get(
+        `SELECT COUNT(*) as cnt FROM user_badges WHERE user_id = ? AND badge IN ('Badge Roche', 'Badge Cascade') AND unlocked = 1`,
+        [userId]
+      );
+      if ((badgeRow?.cnt || 0) < 2) return res.status(400).json({ error: "Conditions du succès non remplies (badges manquants)" });
+    }
 
     const reward  = REWARDS[achievementId] || 0;
     const items   = ITEM_REWARDS[achievementId] || {};

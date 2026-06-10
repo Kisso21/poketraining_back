@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { run, get } from "../db.js";
 import { checkAchievements } from "./achievements.js";
+import { getIO } from "../socket.js";
 
 const router = Router();
 
@@ -110,6 +111,7 @@ router.post("/:userId/addxp", async (req, res) => {
     // Déclencher la détection des succès de niveau en temps réel
     if (levelUp) checkAchievements(req.user.id).catch(() => {});
 
+    getIO()?.emit("sync:level", { userId: req.user.id, xpGain, newXp, oldLevel, newLevel, levelUp, pointsGained: pointsToAdd });
     res.json({ xpGain, newXp, oldLevel, newLevel, levelUp, pointsGained: pointsToAdd });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });

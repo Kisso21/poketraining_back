@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { run, get, all } from "../db.js";
+import { getIO } from "../socket.js";
 
 const router = Router();
 const LABELS = { charmechroma:"Charme Chroma", appat:"Appât", luckycoin:"Lucky Coin", glitch:"Glitch" };
@@ -47,6 +48,7 @@ router.post("/:username/toggle", async (req, res) => {
     const passives = {};
     rows.forEach(r => { passives[r.item] = { item: r.item, unlocked: !!r.unlocked, active: !!r.active }; });
 
+    getIO()?.emit("sync:passives", { userId, passives: Object.values(passives) });
     res.json({
       success: true,
       message: newState ? `✅ ${LABELS[item]} activé` : `❌ ${LABELS[item]} désactivé`,

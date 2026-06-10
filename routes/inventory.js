@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { run, get, all, GEN1_POKEMONS, GEN2_POKEMONS, GEN3_POKEMONS, GEN4_POKEMONS } from "../db.js";
+import { getIO } from "../socket.js";
 
 const router = Router();
 
@@ -180,6 +181,7 @@ router.post("/useball/:username", async (req, res) => {
 
     await run(`UPDATE inventory SET ${ballType} = ${ballType} - 1 WHERE user_id = ?`, [user.id]);
     const updated = await getInventoryByUsername(username);
+    getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
     res.json({ success: true, inventory: updated });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
@@ -215,6 +217,7 @@ router.post("/shop/:username/buy", async (req, res) => {
       [cost, user.id]
     );
     const updated = await getInventoryByUsername(username);
+    getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
     res.json({ success: true, message: msg, inventory: updated, item: col });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
@@ -242,6 +245,7 @@ router.post("/shop/:username/sell", async (req, res) => {
       [value, user.id]
     );
     const updated = await getInventoryByUsername(username);
+    getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
     res.json({ success: true, message: `Tu as vendu un ${target} pour ${value}₽ !`, inventory: updated, item: target });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
@@ -265,6 +269,8 @@ router.post("/useitem/:username", async (req, res) => {
     if (item === "resetball") {
       await run(`UPDATE inventory SET resetball = resetball - 1 WHERE user_id = ?`, [user.id]);
       await run(`UPDATE game_states SET next_available_at = ? WHERE user_id = ?`, [new Date().toISOString(), user.id]);
+      const updated = await getInventoryByUsername(username);
+      getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
       return res.json({ success: true, message: "⏰ Tous les timers ont été réinitialisés !" });
     }
 
@@ -295,6 +301,8 @@ router.post("/useitem/:username", async (req, res) => {
         await run(`INSERT INTO game_states (user_id, game_type, state, updated_at) VALUES (?,?,?,?)`, [user.id, gameType, JSON.stringify(state), now]);
       }
       await run(`UPDATE inventory SET potion = potion - 1 WHERE user_id = ?`, [user.id]);
+      const updated = await getInventoryByUsername(username);
+      getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
       return res.json({ success: true, message: `💊 +20 score ajouté au jeu ${gameType} !`, newScore: state.score });
     }
 
@@ -335,6 +343,8 @@ router.post("/useitem/:username", async (req, res) => {
         }
       }
 
+      const updated = await getInventoryByUsername(username);
+      getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
       if (count === 1) return res.json({ success: true, prize: prizes[0] });
       return res.json({ success: true, prizes });
     }
@@ -355,6 +365,8 @@ router.post("/useitem/:username/confirm-superbonbon", async (req, res) => {
     if ((inv?.superbonbon || 0) <= 0) return res.status(400).json({ error: "Plus de superbonbon disponible !" });
 
     await run(`UPDATE inventory SET superbonbon = superbonbon - 1 WHERE user_id = ?`, [user.id]);
+    const updated = await getInventoryByUsername(username);
+    getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
     res.json({ success: true, message: "🍬 Superbonbon utilisé avec succès !" });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
@@ -373,6 +385,8 @@ router.post("/safari-reward/:username", async (req, res) => {
     const user = await getUserByUsername(username);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
     await run(`UPDATE inventory SET ${item} = COALESCE(${item}, 0) + ? WHERE user_id = ?`, [qty, user.id]);
+    const updated = await getInventoryByUsername(username);
+    getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
     res.json({ success: true, item, qty });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });

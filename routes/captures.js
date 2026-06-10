@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { run, get, all, GEN1_POKEMONS, GEN2_POKEMONS, GEN3_POKEMONS, GEN4_POKEMONS } from "../db.js";
 import { checkAchievements } from "./achievements.js";
+import { getIO } from "../socket.js";
 
 const router = Router();
 const CAPTURABLE_SET = new Set([...GEN1_POKEMONS, ...GEN2_POKEMONS, ...GEN3_POKEMONS, ...GEN4_POKEMONS, "MissingNo"]);
@@ -87,11 +88,31 @@ router.post("/capture", async (req, res) => {
         `INSERT INTO pokemon_reserve (user_id, pokemon_name, is_shiny) VALUES (?,?,?)`,
         [userId, pokemonName, isShiny]
       );
+      getIO()?.emit("sync:pokedex", { userId, pokemonName, isShiny, addedToReserve: true, newAchievements: [] });
       return res.json({ success: true, addedToReserve: true, message: pokemonName + " ajouté à ta réserve !", isShiny });
     }
 
     const newAchievements = await checkAchievements(userId).catch(() => []);
+    getIO()?.emit("sync:pokedex", { userId, pokemonName, isShiny, addedToReserve: false, newAchievements });
     res.json({ success: true, addedToReserve: false, message: pokemonName + " capturé !", isShiny, newAchievements });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/pokedex/seen — marque un Pokémon comme rencontré pendant une partie
+router.post("/pokedex/seen", async (req, res) => {
+  let { pokemonName } = req.body;
+  if (!pokemonName) return res.status(400).json({ error: "Données manquantes" });
+  pokemonName = String(pokemonName).trim();
+  if (!CAPTURABLE_SET.has(pokemonName)) return res.status(400).json({ error: "Pokémon invalide" });
+  try {
+    await run(
+      `INSERT INTO pokemon_seen (user_id, pokemon_name, seen_count) VALUES (?,?,1)
+       ON CONFLICT(user_id, pokemon_name) DO UPDATE SET seen_count = seen_count + 1`,
+      [req.user.id, pokemonName]
+    );
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }
@@ -111,7 +132,18 @@ router.get("/pokedex/:userId", async (req, res) => {
       if (Number(r.isShiny) === 0) pokedex[name].normal = true;
       if (Number(r.isShiny) === 1) pokedex[name].shiny  = true;
     });
-    res.json({ captured: rows.length, total: 251, pokemons: pokedex });
+    // Pokémon rencontrés — liste séparée pour ne pas changer la sémantique
+    // de `pokemons` (clé présente = capturé).
+    // `seen` : noms vus mais non capturés (tag "Vu mais non capturé")
+    // `seenCounts` : nombre de fois où chaque Pokémon a été vu (capturé ou non)
+    const seenRows = await all(
+      `SELECT pokemon_name AS pokemonName, seen_count AS seenCount FROM pokemon_seen WHERE user_id = ?`,
+      [req.user.id]
+    );
+    const seenCounts = {};
+    seenRows.forEach(r => { seenCounts[String(r.pokemonName).trim()] = Number(r.seenCount) || 1; });
+    const seen = Object.keys(seenCounts).filter(name => !pokedex[name]);
+    res.json({ captured: rows.length, total: 251, pokemons: pokedex, seen, seenCounts });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }

@@ -24,7 +24,7 @@ import pokeclickRoutes   from "./routes/pokeclick.js";
 import areneRoutes       from "./routes/arenes.js";
 import reserveRoutes     from "./routes/reserve.js";
 import pokeTradeRoutes   from "./routes/pokeTrade.js";
-import eventRoutes       from "./routes/events.js";
+import eventRoutes, { resumeEventTimers } from "./routes/events.js";
 import versusRoutes, { setupVersusSocket } from "./routes/versus.js";
 import jackpotRoutes from "./routes/jackpot.js";
 import { scheduleWeeklyReset } from "./jobs/ladderReset.js";
@@ -229,6 +229,7 @@ const MAX_BIND_RETRIES = 10;
 
 initDB().then(() => {
   scheduleWeeklyReset();
+  resumeEventTimers(); // reprend l'expiration des événements actifs après redémarrage
   server.listen(PORT, () => { _bindRetries = 0; console.log(`🚀 PokéTraining backend → port ${PORT}`); });
   server.on("error", (err) => {
     if (err.code === "EADDRINUSE") {

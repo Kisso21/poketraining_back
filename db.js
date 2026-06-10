@@ -196,6 +196,18 @@ export async function initDB() {
     FOREIGN KEY(user_id) REFERENCES users(id)
   )`);
 
+  // Pokémon rencontrés en jeu (Pokédex "Vu mais non capturé" + compteur de vues)
+  await dbRun(`CREATE TABLE IF NOT EXISTS pokemon_seen (
+    user_id       INTEGER NOT NULL,
+    pokemon_name  TEXT NOT NULL,
+    seen_count    INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(user_id, pokemon_name),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  )`);
+  // Migration : compteur ajouté après coup (silencieux si déjà présent)
+  try { await dbRun(`ALTER TABLE pokemon_seen ADD COLUMN seen_count INTEGER NOT NULL DEFAULT 1`); } catch {}
+
   // États de jeu — inchangé
   await dbRun(`CREATE TABLE IF NOT EXISTS game_states (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,

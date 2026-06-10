@@ -27,12 +27,21 @@ function publicEvent(event) {
 }
 
 // ── GET /api/events/active ──────────────────────────────────────────
+// Note : datetime(ends_at) normalise le format ISO ("...T...Z") stocké par
+// new Date().toISOString() — une comparaison texte brute avec datetime('now')
+// était toujours vraie ('T' > ' ') et les événements n'expiraient jamais.
 router.get("/active", optionalToken, async (req, res) => {
   try {
+    // Filet de sécurité : désactive les événements expirés dont le timer
+    // mémoire a été perdu (ex. redémarrage du serveur)
+    await run(`
+      UPDATE events SET is_active = 0
+      WHERE is_active = 1 AND ends_at IS NOT NULL AND datetime(ends_at) <= datetime('now')
+    `);
     const event = await get(`
       SELECT * FROM events
       WHERE is_active = 1
-        AND (ends_at IS NULL OR ends_at > datetime('now'))
+        AND (ends_at IS NULL OR datetime(ends_at) > datetime('now'))
         AND (type NOT IN ('premier_clic','devinette') OR claimed_by IS NULL)
       ORDER BY started_at DESC LIMIT 1
     `);
@@ -62,8 +71,9 @@ router.post("/create", verifyAdmin, async (req, res) => {
   try {
     await run(`UPDATE events SET is_active = 0 WHERE is_active = 1`);
 
-    const endsAt = durationSeconds
-      ? new Date(Date.now() + durationSeconds * 1000).toISOString()
+    const defaultDuration = type === "annonce" && !durationSeconds ? 7200 : durationSeconds;
+    const endsAt = defaultDuration
+      ? new Date(Date.now() + defaultDuration * 1000).toISOString()
       : null;
 
     const result = await run(`
@@ -266,5 +276,31 @@ router.get("/my-vote/:eventId", verifyToken, async (req, res) => {
     res.json({ voted: !!row, optionIndex: row?.option_index ?? null });
   } catch { res.status(500).json({ error: "Erreur serveur" }); }
 });
+
+// ── Reprise des timers d'expiration après redémarrage ───────────────
+// L'auto-expiration repose sur un setTimeout en mémoire : il est perdu quand
+// le process redémarre (pm2 restart, crash). Au démarrage, on désactive les
+// événements déjà expirés et on reprogramme les timers de ceux encore actifs.
+export async function resumeEventTimers() {
+  try {
+    const rows = await all(`SELECT id, ends_at FROM events WHERE is_active = 1 AND ends_at IS NOT NULL`);
+    for (const ev of rows) {
+      const delay = new Date(ev.ends_at).getTime() - Date.now();
+      const expire = async () => {
+        const upd = await run(`UPDATE events SET is_active = 0 WHERE id = ? AND is_active = 1`, [ev.id]);
+        if (upd.changes > 0) getIO()?.emit("event:end", { reason: "expired" });
+      };
+      if (delay <= 0) {
+        await expire();
+        console.log(`🧹 Événement ${ev.id} expiré pendant l'arrêt du serveur — désactivé`);
+      } else {
+        setTimeout(() => expire().catch(() => {}), delay);
+        console.log(`⏰ Timer d'expiration repris pour l'événement ${ev.id} (dans ${Math.round(delay / 1000)}s)`);
+      }
+    }
+  } catch (err) {
+    console.error("Erreur resumeEventTimers:", err);
+  }
+}
 
 export default router;
