@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { run, get, all } from "../db.js";
+import { broadcastRocket, randomHidePage, randomPos, ROCKET_SEUIL } from "./teamRocket.js";
 
 const router = Router();
 
@@ -60,6 +61,11 @@ router.post("/sell", async (req, res) => {
     return res.status(400).json({ error: "Aucun Pokémon sélectionné" });
 
   try {
+    // Team Rocket : ventes bloquées tant qu'elle n'est pas de retour au shop
+    const rocket = await get(`SELECT statut FROM team_rocket WHERE id = 1`);
+    if (rocket && rocket.statut !== "au_shop")
+      return res.status(403).json({ error: "La Team Rocket est partie avec tous les Pokémon !" });
+
     const placeholders = ids.map(() => "?").join(",");
     const entries = await all(
       `SELECT id, pokemon_name AS name, is_shiny AS isShiny
@@ -100,6 +106,32 @@ router.post("/sell", async (req, res) => {
 
     // Créditer les pokédollars (pas de limite journalière)
     await run(`UPDATE inventory SET pokedollars = pokedollars + ? WHERE user_id = ?`, [gained, userId]);
+
+    // Team Rocket : +1 par Pokémon vendu, ajout au butin, fuite à 50/50
+    try {
+      const tr = await get(`SELECT compteur, inventaire FROM team_rocket WHERE id = 1 AND statut = 'au_shop'`);
+      if (tr) {
+        let butin = [];
+        try { butin = JSON.parse(tr.inventaire || "[]"); } catch { butin = []; }
+        for (const e of entries) butin.push({ name: e.name, isShiny: Number(e.isShiny) === 1 ? 1 : 0 });
+        const newCount = Math.min(ROCKET_SEUIL, (tr.compteur || 0) + entries.length);
+        if (newCount >= ROCKET_SEUIL) {
+          const pos = randomPos();
+          await run(
+            `UPDATE team_rocket SET compteur = ?, inventaire = ?, statut = 'en_fuite',
+             page_cachee = ?, pos_x = ?, pos_y = ?, finder_id = NULL, fled_at = CURRENT_TIMESTAMP,
+             updated_at = CURRENT_TIMESTAMP WHERE id = 1`,
+            [ROCKET_SEUIL, JSON.stringify(butin), randomHidePage(), pos.x, pos.y]
+          );
+        } else {
+          await run(
+            `UPDATE team_rocket SET compteur = ?, inventaire = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1`,
+            [newCount, JSON.stringify(butin)]
+          );
+        }
+        broadcastRocket();
+      }
+    } catch (e) { console.error("Team Rocket sell hook:", e); }
 
     const newBalance = await get(`SELECT pokedollars FROM inventory WHERE user_id = ?`, [userId]);
     res.json({

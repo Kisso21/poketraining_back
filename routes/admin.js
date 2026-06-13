@@ -6,6 +6,7 @@ import { execSync } from "child_process";
 import { run, get, all, GEN1_POKEMONS } from "../db.js";
 import { verifyAdmin, ALLOWED_ITEM_COLUMNS } from "../middleware/auth.js";
 import { emitToUser } from "../socket.js";
+import { broadcastRocket } from "./teamRocket.js";
 
 const router = Router();
 
@@ -472,6 +473,45 @@ router.get("/stats", async (req, res) => {
       topRich,
       recentUsers,
     });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// GET /api/admin/teamrocket — état complet (butin, fuite, localisation)
+router.get("/teamrocket", async (req, res) => {
+  try {
+    const row = await get("SELECT * FROM team_rocket WHERE id = 1");
+    if (!row) return res.json({ exists: false });
+    let inventaire = [];
+    try { inventaire = JSON.parse(row.inventaire || "[]"); } catch { inventaire = []; }
+    let finder = null;
+    if (row.finder_id) {
+      finder = await get("SELECT username FROM users WHERE id = ?", [row.finder_id]);
+    }
+    res.json({
+      compteur:    row.compteur,
+      seuil:       50,
+      statut:      row.statut,
+      page_cachee: row.page_cachee,
+      pos_x:       row.pos_x,
+      pos_y:       row.pos_y,
+      fled_at:     row.fled_at,
+      updated_at:  row.updated_at,
+      finder:      finder?.username ?? null,
+      inventaire,
+    });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// POST /api/admin/teamrocket/reset — force le retour au shop (débloque le cycle)
+router.post("/teamrocket/reset", async (req, res) => {
+  try {
+    await run(
+      `UPDATE team_rocket SET compteur = 0, statut = 'au_shop', page_cachee = NULL,
+       pos_x = NULL, pos_y = NULL, inventaire = '[]', finder_id = NULL,
+       updated_at = CURRENT_TIMESTAMP WHERE id = 1`
+    );
+    await broadcastRocket();
+    res.json({ success: true });
   } catch { res.status(500).json({ error: "Erreur serveur" }); }
 });
 

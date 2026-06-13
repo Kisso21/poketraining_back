@@ -419,6 +419,25 @@ export async function initDB() {
     FOREIGN KEY(user_id) REFERENCES users(id)
   )`);
 
+  // ── Team Rocket (singleton global, temps réel) ────────────────────────────
+  // compteur 0..50 incrémenté à chaque Pokémon vendu en réserve. À 50 la Team
+  // Rocket s'enfuit (statut en_fuite) et se cache sur une page aléatoire.
+  await dbRun(`CREATE TABLE IF NOT EXISTS team_rocket (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    compteur     INTEGER NOT NULL DEFAULT 0,
+    statut       TEXT    NOT NULL DEFAULT 'au_shop',
+    page_cachee  TEXT,
+    inventaire   TEXT    NOT NULL DEFAULT '[]',
+    finder_id    INTEGER,
+    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`);
+  await dbRun(`INSERT OR IGNORE INTO team_rocket (id) VALUES (1)`);
+  // Migration : horodatage du déclenchement de la fuite (silencieux si déjà présent)
+  try { await dbRun(`ALTER TABLE team_rocket ADD COLUMN fled_at TIMESTAMP`); } catch {}
+  // Migration : position (en %) du sprite sur la page piégée
+  try { await dbRun(`ALTER TABLE team_rocket ADD COLUMN pos_x REAL`); } catch {}
+  try { await dbRun(`ALTER TABLE team_rocket ADD COLUMN pos_y REAL`); } catch {}
+
   // ── PokéVersus ────────────────────────────────────────────────────────────
   await dbRun(`CREATE TABLE IF NOT EXISTS versus_queue (
     username  TEXT PRIMARY KEY,
