@@ -1104,7 +1104,7 @@ const POKEDEX_REQS = {
   "pokedex-gen2-glace":       { all: ["Marcacrin", "Cochignon", "Cadoizo"] },
   // ── Gen 2 — compteurs ────────────────────────────────────────────
   "pokedex-normal-200":       { normalCount: 200 },
-  "pokedex-normal-251":       { normalCount: 251 },
+  "pokedex-normal-251":       { normalAll: [...GEN1_POKEMONS, ...GEN2_NAMES] },
   // ── Gen 2 — shiny ────────────────────────────────────────────────
   "shiny-meganium":    { shinyAll: ["Méganium"] },
   "shiny-typhlosion":  { shinyAll: ["Typhlosion"] },
@@ -1163,7 +1163,7 @@ const POKEDEX_REQS = {
   "shiny-gen2-starters-all":       { shinyAll: ["Méganium", "Typhlosion", "Aligatueur"] },
   "shiny-gen2-legendary-all":      { shinyAll: ["Raikou", "Entei", "Suicune", "Lugia", "Ho-Oh"] },
   // ── Déverrouillage Gen 3 & 4 (succès caché) ──────────────────────────────
-  "unlock-gen3-4": { biomeCount: { count: 251, names: [...GEN1_POKEMONS, ...GEN2_NAMES] } },
+  "unlock-gen3-4": { normalAll: [...GEN1_POKEMONS, ...GEN2_NAMES] },
   // ── Pokédex Gen 3 ──
   "g3-arcko-line": { all: ["Arcko", "Massko", "Jungko"] },
   "g3-poussifeu-line": { all: ["Poussifeu", "Galifeu", "Braségali"] },
