@@ -7,6 +7,7 @@ import { run, get, all, GEN1_POKEMONS } from "../db.js";
 import { verifyAdmin, ALLOWED_ITEM_COLUMNS } from "../middleware/auth.js";
 import { emitToUser } from "../socket.js";
 import { broadcastRocket } from "./teamRocket.js";
+import { VALID_ITEMS } from "./events.js";
 
 const router = Router();
 
@@ -511,6 +512,74 @@ router.post("/teamrocket/reset", async (req, res) => {
        updated_at = CURRENT_TIMESTAMP WHERE id = 1`
     );
     await broadcastRocket();
+    res.json({ success: true });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// ─── Codes promo ──────────────────────────────────────────────────
+// GET /api/admin/promo-codes  → liste des codes
+router.get("/promo-codes", async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT p.id, p.code, p.reward_data, p.uses, p.max_uses, p.is_active, p.created_at, u.username AS created_by
+       FROM promo_codes p LEFT JOIN users u ON u.id = p.created_by
+       ORDER BY p.created_at DESC`
+    );
+    res.json(rows.map(r => ({
+      id:        r.id,
+      code:      r.code,
+      rewardData: (() => { try { return JSON.parse(r.reward_data || "{}"); } catch { return {}; } })(),
+      uses:      r.uses,
+      maxUses:   r.max_uses,
+      isActive:  !!r.is_active,
+      createdAt: r.created_at,
+      createdBy: r.created_by,
+    })));
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// POST /api/admin/promo-codes  → créer un code { code, rewardData }
+router.post("/promo-codes", async (req, res) => {
+  const { code, rewardData, maxUses } = req.body;
+  const clean = (code || "").trim();
+  if (!clean) return res.status(400).json({ error: "Nom du code requis" });
+  if (clean.length > 40) return res.status(400).json({ error: "Code trop long (40 max)" });
+
+  // Limite d'utilisation optionnelle (NULL = illimité)
+  let maxUsesVal = null;
+  if (maxUses !== undefined && maxUses !== null && maxUses !== "") {
+    const m = parseInt(maxUses);
+    if (!Number.isFinite(m) || m < 1)
+      return res.status(400).json({ error: "Limite d'utilisation invalide" });
+    maxUsesVal = m;
+  }
+
+  // Filtre les récompenses valides et positives
+  const rd = {};
+  for (const [item, qty] of Object.entries(rewardData || {})) {
+    const n = parseInt(qty);
+    if (VALID_ITEMS.has(item) && Number.isFinite(n) && n > 0) rd[item] = n;
+  }
+  if (Object.keys(rd).length === 0)
+    return res.status(400).json({ error: "Ajoute au moins une récompense" });
+
+  try {
+    const result = await run(
+      `INSERT INTO promo_codes (code, reward_data, max_uses, created_by) VALUES (?,?,?,?)`,
+      [clean, JSON.stringify(rd), maxUsesVal, req.user.id]
+    );
+    res.json({ success: true, id: result.lastID });
+  } catch (err) {
+    if (err.message?.includes("UNIQUE"))
+      return res.status(400).json({ error: "Ce code existe déjà" });
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// DELETE /api/admin/promo-codes/:id
+router.delete("/promo-codes/:id", async (req, res) => {
+  try {
+    await run(`DELETE FROM promo_codes WHERE id = ?`, [req.params.id]);
     res.json({ success: true });
   } catch { res.status(500).json({ error: "Erreur serveur" }); }
 });

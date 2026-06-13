@@ -486,6 +486,21 @@ export async function initDB() {
     rewards_distributed INTEGER DEFAULT 0
   )`);
 
+  // Codes promo (récompenses à l'inscription)
+  await dbRun(`CREATE TABLE IF NOT EXISTS promo_codes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    code        TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    reward_data TEXT DEFAULT '{}',
+    uses        INTEGER DEFAULT 0,
+    max_uses    INTEGER,
+    is_active   INTEGER DEFAULT 1,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by  INTEGER,
+    FOREIGN KEY(created_by) REFERENCES users(id)
+  )`);
+  // Limite d'utilisation (NULL = illimité) — ajout rétrocompatible
+  try { await dbRun(`ALTER TABLE promo_codes ADD COLUMN max_uses INTEGER`); } catch {}
+
   await dbRun(`CREATE INDEX IF NOT EXISTS idx_versus_ladder_3v3_pts ON versus_ladder_3v3(points DESC)`);
   await dbRun(`CREATE INDEX IF NOT EXISTS idx_versus_ladder_6v6_pts ON versus_ladder_6v6(points DESC)`);
 

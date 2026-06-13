@@ -6,6 +6,7 @@ import { run, get }  from "../db.js";
 import { PASSIVES, BADGES, ARENES } from "../db.js";
 import { verifyToken } from "../middleware/auth.js";
 import { sendVerificationEmail, sendWelcomeEmail } from "../mailer.js";
+import { giveReward } from "./events.js";
 
 const router = Router();
 
@@ -19,7 +20,7 @@ router.all("/register", (req, res, next) => req.method === "POST" ? next() : res
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 router.post("/register", async (req, res) => {
-  const { username, password, email } = req.body;
+  const { username, password, email, promoCode } = req.body;
   if (!username?.trim() || !password)
     return res.status(400).json({ error: "Nom et mot de passe requis" });
   if (username.length < 2 || username.length > 20)
@@ -37,6 +38,19 @@ router.post("/register", async (req, res) => {
   const existing = await get(`SELECT id FROM users WHERE email = ?`, [emailNorm]);
   if (existing)
     return res.status(400).json({ error: "Email déjà utilisé" });
+
+  // Code de départ optionnel : on le valide avant de créer le compte
+  let promo = null;
+  if (promoCode?.trim()) {
+    promo = await get(
+      `SELECT id, reward_data, uses, max_uses FROM promo_codes WHERE code = ? AND is_active = 1`,
+      [promoCode.trim()]
+    );
+    if (!promo)
+      return res.status(400).json({ error: "Code de départ invalide" });
+    if (promo.max_uses != null && promo.uses >= promo.max_uses)
+      return res.status(400).json({ error: "Ce code a atteint sa limite d'utilisation" });
+  }
 
   try {
     const hashed = await bcrypt.hash(password, 10);
@@ -57,6 +71,23 @@ router.post("/register", async (req, res) => {
 
     await run(`UPDATE users SET email_verified = 0 WHERE id = ?`, [userId]);
 
+    // Appliquer le code de départ s'il a été fourni.
+    // Incrément atomique conditionné par la limite pour éviter tout dépassement
+    // en cas d'inscriptions simultanées : la récompense n'est donnée que si la
+    // place a effectivement été réservée.
+    if (promo) {
+      const upd = await run(
+        `UPDATE promo_codes SET uses = uses + 1
+         WHERE id = ? AND (max_uses IS NULL OR uses < max_uses)`,
+        [promo.id]
+      );
+      if (upd.changes === 1) {
+        let rd = {};
+        try { rd = JSON.parse(promo.reward_data || "{}"); } catch { rd = {}; }
+        await giveReward(userId, rd);
+      }
+    }
+
     const verifyToken  = crypto.randomBytes(32).toString("hex");
     const verifyExpiry = Date.now() + 24 * 60 * 60 * 1000;
     await run(
@@ -75,10 +106,19 @@ router.post("/register", async (req, res) => {
       console.error("Erreur envoi email vérification:", err)
     );
 
+    const inv = await get(
+      `SELECT pokedollars, pokeball, superball, hyperball, masterball FROM inventory WHERE user_id = ?`,
+      [userId]
+    ) || {};
+
     return res.json({
       success: true, token, id: userId, username: username.trim(),
       emailVerified: false,
-      pokedollars: 0, pokeball: 5, superball: 0, hyperball: 0, masterball: 0,
+      pokedollars: inv.pokedollars ?? 0,
+      pokeball:    inv.pokeball    ?? 5,
+      superball:   inv.superball   ?? 0,
+      hyperball:   inv.hyperball   ?? 0,
+      masterball:  inv.masterball  ?? 0,
     });
   } catch (err) {
     if (err.message?.includes("UNIQUE constraint failed: users.username"))

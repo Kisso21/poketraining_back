@@ -5,9 +5,9 @@ import { getIO, getConnectedUserIds } from "../socket.js";
 
 const router = Router();
 
-const VALID_ITEMS = new Set(["pokeball","superball","hyperball","masterball","resetball","superbonbon","potion","lootbox","pokedollars"]);
+export const VALID_ITEMS = new Set(["pokeball","superball","hyperball","masterball","resetball","superbonbon","potion","lootbox","pokedollars"]);
 
-async function giveReward(userId, rewardData) {
+export async function giveReward(userId, rewardData) {
   for (const [item, qty] of Object.entries(rewardData)) {
     if (item.startsWith("_") || !VALID_ITEMS.has(item) || !qty) continue;
     if (item === "pokedollars") {
