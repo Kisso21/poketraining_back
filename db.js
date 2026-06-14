@@ -350,6 +350,19 @@ export async function initDB() {
   // Migration : colonne raison suppression admin (silencieux si déjà présente)
   try { await dbRun(`ALTER TABLE pokemon_trades ADD COLUMN admin_reason TEXT`); } catch {}
 
+  // Notifications joueur (ventes/échanges PokéTrade, etc.)
+  await dbRun(`CREATE TABLE IF NOT EXISTS notifications (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    type        TEXT NOT NULL,
+    message     TEXT NOT NULL,
+    data        TEXT,
+    is_read     INTEGER NOT NULL DEFAULT 0,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  )`);
+  await dbRun(`CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, is_read)`);
+
   // Événements en temps réel
   await dbRun(`CREATE TABLE IF NOT EXISTS events (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,

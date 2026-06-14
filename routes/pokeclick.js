@@ -4,6 +4,7 @@ import { run, get, all } from "../db.js";
 const router = Router();
 
 function getDailyLimit(ownedKeys) {
+  if (ownedKeys.includes("goldball"))   return 10000;
   if (ownedKeys.includes("masterball")) return 8000;
   if (ownedKeys.includes("hyperball"))  return 7000;
   if (ownedKeys.includes("superball"))  return 6000;
@@ -14,16 +15,20 @@ const UPGRADES = {
   superball:     { price: 5000,   type: "ball" },
   hyperball:     { price: 15000,  type: "ball" },
   masterball:    { price: 50000,  type: "ball" },
+  goldball:      { price: 100000, type: "ball" },
   drop_items:    { price: 50000,  type: "drop" },
   drop_booster:  { price: 100000, type: "drop" },
   table_loot:    { price: 25000,  type: "drop" },
+  double_slot:   { price: 75000,  type: "feature" },
 };
 
 function clickReward(ownedKeys) {
-  let base = 1;
-  if (ownedKeys.includes("superball")) base += 2;
-  if (ownedKeys.includes("hyperball")) base += 4;
-  return base;
+  // ₽/clic par palier (la ball la plus haute possédée détermine la valeur)
+  if (ownedKeys.includes("goldball"))   return 5;
+  if (ownedKeys.includes("masterball")) return 4;
+  if (ownedKeys.includes("hyperball"))  return 3;
+  if (ownedKeys.includes("superball"))  return 2;
+  return 1;
 }
 
 async function getDailyEarned(userId) {
@@ -98,19 +103,19 @@ router.post("/click", async (req, res) => {
     const earned = await getDailyEarned(userId);
     if (earned >= dailyLimit) return res.json({ success: true, gained: 0, remaining: 0, drops: [] });
 
-    // Un seul multiplicateur combo (×0.1 par tranche de 10 clics, max ×2.0)
+    // Combo (×0.1 par tranche de 20 clics, max ×2.0) — ne multiplie QUE les drops
     const comboMult = Math.min(2.0, 1 + Math.floor(Math.max(0, combo || 0) / 20) * 0.1);
-    const baseReward = clickReward(owned);
-    const reward = Math.min(Math.round(baseReward * comboMult), dailyLimit - earned);
+    // Pokédollars par clic : valeur fixe de la ball (1 à 5), SANS combo
+    const reward = Math.min(clickReward(owned), dailyLimit - earned);
     await creditFarm(userId, reward);
 
     // Drop rolls — comboMult et ballMult s'appliquent aux drops
-    // ballMult compense le fait que les meilleures balls donnent plus de ₽/clic
-    // mais réduisent le nombre de clics, donc les chances de drop/jour
+    // ballMult = ₽/clic de la ball (1 à 5) : comme les meilleures balls atteignent
+    // la limite en moins de clics, ce facteur garde les drops/jour ∝ à la limite.
     const drops = [];
     const roll  = () => Math.random();
     const boostMult = owned.includes("drop_booster") ? 2.0 : 1.0;
-    const ballMult  = clickReward(owned); // 1 / 3 / 7 selon la ball possédée
+    const ballMult  = clickReward(owned); // 1 à 5 selon la ball possédée
     const dropMult  = boostMult * comboMult * ballMult;
 
     // Pokéball : toujours actif
@@ -192,6 +197,24 @@ router.post("/autoclick", async (req, res) => {
     res.json({ gained: gain, remaining: Math.max(0, dailyLimit - Math.min(dailyLimit, earned + gain)) });
   } catch (err) {
     console.error("Erreur autoclick:", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /heal — consomme 1 Potion pour restaurer l'endurance d'un Pokémon (PokéClick)
+router.post("/heal", async (req, res) => {
+  const userId = req.user.id;
+  try {
+    // Décrément atomique : ne réussit que s'il reste au moins 1 Potion
+    const upd = await run(
+      `UPDATE inventory SET potion = potion - 1 WHERE user_id = ? AND potion > 0`,
+      [userId]
+    );
+    if (!upd.changes) return res.status(400).json({ error: "Aucune Potion disponible" });
+    const inv = await get(`SELECT potion FROM inventory WHERE user_id = ?`, [userId]);
+    res.json({ success: true, potion: inv?.potion ?? 0 });
+  } catch (err) {
+    console.error("Erreur heal:", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });

@@ -28,6 +28,7 @@ import eventRoutes, { resumeEventTimers } from "./routes/events.js";
 import versusRoutes, { setupVersusSocket } from "./routes/versus.js";
 import jackpotRoutes from "./routes/jackpot.js";
 import teamRocketRoutes from "./routes/teamRocket.js";
+import notificationRoutes from "./routes/notifications.js";
 import { scheduleWeeklyReset } from "./jobs/ladderReset.js";
 import { FR_TO_CRY_ID } from "./routes/gameState.js";
 
@@ -187,6 +188,7 @@ app.use("/api/arenes",        verifyToken, areneRoutes);
 app.use("/api/reserve",      verifyToken, reserveRoutes);
 app.use("/api/teamrocket",   verifyToken, teamRocketRoutes);
 app.use("/api/trade",        verifyToken, pokeTradeRoutes);
+app.use("/api/notifications", verifyToken, notificationRoutes);
 app.use("/api/admin",         verifyAdmin, adminRoutes);
 app.use("/api/events",                    eventRoutes);
 app.use("/api/versus",     verifyToken,  versusRoutes);

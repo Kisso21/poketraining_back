@@ -1,11 +1,25 @@
 import { Router } from "express";
-import { run, get, all } from "../db.js";
+import { run, get, all, GEN3_POKEMONS, GEN4_POKEMONS } from "../db.js";
+import { pushNotification } from "./notifications.js";
 
 // req.user est déjà injecté par verifyToken dans server.js
 const requireAdmin = (req, res, next) => {
   if (req.user?.role !== "admin") return res.status(403).json({ error: "Accès refusé" });
   next();
 };
+
+// ── Restriction génération : les Pokémon Gen 3/4 ne sont visibles/échangeables
+// que par les joueurs ayant débloqué le succès "unlock-gen3-4". ────────────────
+const GEN34_SET = new Set([...GEN3_POKEMONS, ...GEN4_POKEMONS]);
+const isGen34 = (name) => GEN34_SET.has(name);
+
+async function hasGen34Unlock(userId) {
+  const row = await get(
+    `SELECT claimed FROM achievements WHERE user_id = ? AND achievement_id = 'unlock-gen3-4'`,
+    [userId]
+  );
+  return Number(row?.claimed) === 1;
+}
 
 const router = Router();
 
@@ -60,7 +74,13 @@ router.get("/", async (req, res) => {
        ORDER BY t.created_at DESC`,
       [req.user.id]
     );
-    res.json({ trades });
+    // Filtrage serveur : sans le succès Gen 3/4, on masque toute offre impliquant
+    // un Pokémon Gen 3/4 (proposé ou demandé). Non contournable côté client.
+    const gen34Unlocked = await hasGen34Unlock(req.user.id);
+    const visible = gen34Unlocked
+      ? trades
+      : trades.filter(t => !isGen34(t.pokemon_name) && !isGen34(t.requested_pokemon));
+    res.json({ trades: visible });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -147,6 +167,12 @@ router.post("/:id/accept", async (req, res) => {
     if (trade.creator_id === req.user.id)
       return res.status(400).json({ error: "Impossible d'accepter ta propre annonce" });
 
+    // Défense en profondeur : interdire l'acceptation d'une offre Gen 3/4 sans le succès
+    if (isGen34(trade.pokemon_name) || isGen34(trade.requested_pokemon)) {
+      if (!(await hasGen34Unlock(req.user.id)))
+        return res.status(403).json({ error: "Succès Gen 3/4 requis pour cette offre" });
+    }
+
     if (trade.trade_type === "sale") {
       const inv = await get(`SELECT pokedollars FROM inventory WHERE user_id = ?`, [req.user.id]);
       if (!inv || inv.pokedollars < trade.price)
@@ -194,6 +220,25 @@ router.post("/:id/accept", async (req, res) => {
        WHERE id = ?`,
       [req.user.id, req.user.username, tradeId]
     );
+
+    // Notification au créateur (vendeur / proposant) une fois la transaction finalisée
+    const shinyTag = trade.is_shiny ? "✦ " : "";
+    if (trade.trade_type === "sale") {
+      await pushNotification(
+        trade.creator_id,
+        "trade_sold",
+        `💰 ${req.user.username} a acheté ton ${shinyTag}${trade.pokemon_name} pour ${trade.price} ₽ !`,
+        { tradeId, pokemon: trade.pokemon_name, is_shiny: trade.is_shiny, price: trade.price, buyer: req.user.username }
+      );
+    } else {
+      const reqShinyTag = trade.requested_shiny ? "✦ " : "";
+      await pushNotification(
+        trade.creator_id,
+        "trade_exchanged",
+        `🔁 ${req.user.username} a accepté ton échange : ${shinyTag}${trade.pokemon_name} ↔ ${reqShinyTag}${trade.requested_pokemon} !`,
+        { tradeId, gave: trade.pokemon_name, received: trade.requested_pokemon, partner: req.user.username }
+      );
+    }
 
     res.json({ success: true });
   } catch (err) {
