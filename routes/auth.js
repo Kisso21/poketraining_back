@@ -5,7 +5,7 @@ import crypto        from "crypto";
 import { run, get }  from "../db.js";
 import { PASSIVES, BADGES, ARENES } from "../db.js";
 import { verifyToken } from "../middleware/auth.js";
-import { sendVerificationEmail, sendWelcomeEmail } from "../mailer.js";
+import { sendVerificationEmail, sendWelcomeEmail, transporter } from "../mailer.js";
 import { giveReward } from "./events.js";
 
 const router = Router();

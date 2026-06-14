@@ -17,9 +17,14 @@ router.get("/:username", async (req, res) => {
     const userId = await getUserId(req.user.username);
     if (!userId) return res.status(404).json({ error: "Utilisateur introuvable" });
 
-    const rows = await all(`SELECT item, unlocked, active FROM user_passives WHERE user_id = ?`, [userId]);
+    const rows = await all(`SELECT item, unlocked, active, durability, durability_date FROM user_passives WHERE user_id = ?`, [userId]);
+    const today = new Date().toISOString().slice(0, 10);
     const passives = {};
-    rows.forEach(r => { passives[r.item] = { item: r.item, unlocked: !!r.unlocked, active: !!r.active }; });
+    rows.forEach(r => {
+      // Durabilité rechargée chaque jour : si la date stockée n'est pas aujourd'hui, on affiche 100.
+      const durability = r.durability_date === today ? (r.durability ?? 100) : 100;
+      passives[r.item] = { item: r.item, unlocked: !!r.unlocked, active: !!r.active, durability };
+    });
     res.json(Object.values(passives));
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
@@ -60,9 +65,13 @@ router.post("/:username/toggle", async (req, res) => {
       await run(`UPDATE user_passives SET active = 1 WHERE user_id = ? AND item = ?`, [userId, item]);
     }
 
-    const rows = await all(`SELECT item, unlocked, active FROM user_passives WHERE user_id = ?`, [userId]);
+    const rows = await all(`SELECT item, unlocked, active, durability, durability_date FROM user_passives WHERE user_id = ?`, [userId]);
+    const today = new Date().toISOString().slice(0, 10);
     const passives = {};
-    rows.forEach(r => { passives[r.item] = { item: r.item, unlocked: !!r.unlocked, active: !!r.active }; });
+    rows.forEach(r => {
+      const durability = r.durability_date === today ? (r.durability ?? 100) : 100;
+      passives[r.item] = { item: r.item, unlocked: !!r.unlocked, active: !!r.active, durability };
+    });
 
     getIO()?.emit("sync:passives", { userId, passives: Object.values(passives) });
     res.json({

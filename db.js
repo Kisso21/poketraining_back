@@ -242,6 +242,10 @@ export async function initDB() {
     FOREIGN KEY(user_id) REFERENCES users(id)
   )`);
 
+  // Durabilité des passifs (utilisée par Corne d'Abondance : 100, -5/lootbox, recharge quotidienne)
+  try { await dbRun(`ALTER TABLE user_passives ADD COLUMN durability INTEGER NOT NULL DEFAULT 100`); } catch {}
+  try { await dbRun(`ALTER TABLE user_passives ADD COLUMN durability_date TEXT`); } catch {}
+
   // Badges — user_id au lieu de username
   await dbRun(`CREATE TABLE IF NOT EXISTS user_badges (
     user_id       INTEGER NOT NULL,

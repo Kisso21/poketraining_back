@@ -85,13 +85,13 @@ const LOOT_TABLE = [
   { key:"superbonbon", value:1,    qty:1,    rarity:"rare",       chance:9,    type:"item" },
   { key:"pokemon",     catFilter:["stade1ou2","sansevo"], rarity:"rare",       chance:1,    type:"pokemon", isShiny:false },
   // ── Épique — 7% (5.9% items + 1.1% pokémon) ──────────────────────────────
-  { key:"pokedollars", value:2000, qty:2000, rarity:"epique",     chance:2.5,  type:"item" },
+  { key:"pokedollars", value:7500, qty:7500, rarity:"epique",     chance:2.5,  type:"item" },
   { key:"hyperball",   value:1,    qty:1,    rarity:"epique",     chance:2,    type:"item" },
   { key:"resetball",   value:1,    qty:1,    rarity:"epique",     chance:1.4,  type:"item" },
   { key:"pokemon",     catFilter:["stade3"],  rarity:"epique",    chance:1,    type:"pokemon", isShiny:false },
   { key:"pokemon",     catFilter:["stade1ou2","sansevo"], rarity:"epique",     chance:0.1,  type:"pokemon", isShiny:true },
   // ── Légendaire — 2.5% (2.39% items + 0.11% pokémon) ─────────────────────
-  { key:"pokedollars", value:5000, qty:5000, rarity:"legendaire", chance:2.39, type:"item" },
+  { key:"pokedollars", value:15000, qty:15000, rarity:"legendaire", chance:2.39, type:"item" },
   { key:"pokemon",     catFilter:["legendaire"], rarity:"legendaire",          chance:0.1,  type:"pokemon", isShiny:false },
   { key:"pokemon",     catFilter:["fossile","stade3"], rarity:"legendaire",    chance:0.01, type:"pokemon", isShiny:true },
   // ── Mythique — 0.5% (0.4% masterball + 0.1% pokémon) ────────────────────
@@ -100,16 +100,23 @@ const LOOT_TABLE = [
   { key:"pokemon",     catFilter:["legendaire","mythic"], rarity:"mythique",   chance:0.01, type:"pokemon", isShiny:true },
 ];
 
-function rollLootPrize(capturedSet, glitchActive = false, gen34Unlocked = false) {
+function rollLootPrize(capturedSet, glitchActive = false, gen34Unlocked = false, corneBoost = false) {
   // MissingNo exclusif — seulement si passif Glitch actif (0.5%)
   if (glitchActive && Math.random() < 0.005 && !capturedSet.has("MissingNo:0")) {
     return { item:"pokemon", qty:1, rarity:"mythique", pokemon:{ name:"MissingNo", isShiny:false, category:"glitch" } };
   }
 
-  const r = Math.random() * 100;
+  // Corne d'Abondance : double les chances des raretés Rare et au-dessus.
+  // On renormalise en tirant sur la somme réelle des poids (qui dépasse 100).
+  const table = corneBoost
+    ? LOOT_TABLE.map(e => e.rarity === "commun" ? e : { ...e, chance: e.chance * 2 })
+    : LOOT_TABLE;
+  const totalChance = corneBoost ? table.reduce((s, e) => s + e.chance, 0) : 100;
+
+  const r = Math.random() * totalChance;
   let sum = 0, slot;
-  for (const entry of LOOT_TABLE) { sum += entry.chance; if (r <= sum) { slot = entry; break; } }
-  if (!slot) slot = LOOT_TABLE[0];
+  for (const entry of table) { sum += entry.chance; if (r <= sum) { slot = entry; break; } }
+  if (!slot) slot = table[0];
 
   if (slot.type === "pokemon") {
     const pool = gen34Unlocked
@@ -320,39 +327,45 @@ router.post("/useitem/:username", async (req, res) => {
       const glitchRow  = await get(`SELECT active FROM user_passives WHERE user_id = ? AND item = 'glitch'`, [user.id]);
       const glitchActive = glitchRow?.active === 1;
 
-      // Passif Corne d'Abondance : double les quantités d'objets/pokédollars obtenus
-      const corneRow     = await get(`SELECT active FROM user_passives WHERE user_id = ? AND item = 'corneabondance'`, [user.id]);
-      const corneActive  = corneRow?.active === 1;
+      // Passif Corne d'Abondance : double le taux de drop (raretés Rare+) tant qu'il
+      // reste de la durabilité. Durabilité = 100, -5/lootbox, recharge chaque jour.
+      const corneRow     = await get(`SELECT active, durability, durability_date FROM user_passives WHERE user_id = ? AND item = 'corneabondance'`, [user.id]);
+      const today        = new Date().toISOString().slice(0, 10);
+      let   corneDura    = corneRow?.durability_date === today ? (corneRow?.durability ?? 100) : 100;
+      const corneOn      = corneRow?.active === 1;
 
       const gen34Row = await get(`SELECT claimed FROM achievements WHERE user_id = ? AND achievement_id = 'unlock-gen3-4'`, [user.id]);
       const gen34Unlocked = Number(gen34Row?.claimed) === 1;
 
       const prizes = [];
       for (let i = 0; i < count; i++) {
-        const prize = rollLootPrize(capturedSet, glitchActive, gen34Unlocked);
+        const boost = corneOn && corneDura > 0;           // boost actif lootbox par lootbox
+        const prize = rollLootPrize(capturedSet, glitchActive, gen34Unlocked, boost);
+        if (boost) corneDura = Math.max(0, corneDura - 5); // -5 par lootbox boostée
         prizes.push(prize);
         if (prize.item === "pokemon") capturedSet.add(`${prize.pokemon.name}:${prize.pokemon.isShiny ? 1 : 0}`);
       }
 
       // Apply all changes
       await run(`UPDATE inventory SET lootbox = lootbox - ? WHERE user_id = ?`, [count, user.id]);
+      // Persiste la durabilité (et la date du jour pour la recharge quotidienne)
+      await run(`UPDATE user_passives SET durability = ?, durability_date = ? WHERE user_id = ? AND item = 'corneabondance'`, [corneDura, today, user.id]);
       for (const p of prizes) {
         if (p.item === "pokemon") {
           await run(`INSERT OR IGNORE INTO captures (user_id, pokemon_name, is_shiny) VALUES (?,?,?)`, [user.id, p.pokemon.name, p.pokemon.isShiny ? 1 : 0]);
         } else if (p.item === "pokedollars") {
-          if (corneActive) p.qty *= 2;
           await run(`UPDATE inventory SET pokedollars = pokedollars + ? WHERE user_id = ?`, [p.qty, user.id]);
         } else {
           if (!validItem(p.item)) continue;
-          if (corneActive) p.qty *= 2;
           await run(`UPDATE inventory SET ${p.item} = COALESCE(${p.item},0) + ? WHERE user_id = ?`, [p.qty, user.id]);
         }
       }
 
       const updated = await getInventoryByUsername(username);
       getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
-      if (count === 1) return res.json({ success: true, prize: prizes[0] });
-      return res.json({ success: true, prizes });
+      getIO()?.emit("sync:passives", { userId: user.id, item: "corneabondance", durability: corneDura });
+      if (count === 1) return res.json({ success: true, prize: prizes[0], corneDurability: corneDura });
+      return res.json({ success: true, prizes, corneDurability: corneDura });
     }
   } catch (err) {
     console.error("Erreur useitem:", err);
