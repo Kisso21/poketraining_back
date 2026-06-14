@@ -97,7 +97,8 @@ export const GEN4_POKEMONS = [
   "Shaymin","Arceus",
 ];
 
-export const PASSIVES = ["charmechroma","appat","luckycoin","glitch"];
+export const PASSIVES = ["charmechroma","appat","luckycoin","glitch",
+  "multiexp","corneabondance","supercharmechroma","superappat"];
 export const BADGES   = [
   "Badge Roche","Badge Cascade","Badge Foudre","Badge Prisme","Badge Âme","Badge Marais","Badge Volcan",
   "Badge Zéphyr","Badge Essaim","Badge Plaine","Badge Brume","Badge Choc","Badge Minéral","Badge Glacier","Badge Lever",

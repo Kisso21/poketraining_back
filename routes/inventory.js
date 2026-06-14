@@ -320,6 +320,10 @@ router.post("/useitem/:username", async (req, res) => {
       const glitchRow  = await get(`SELECT active FROM user_passives WHERE user_id = ? AND item = 'glitch'`, [user.id]);
       const glitchActive = glitchRow?.active === 1;
 
+      // Passif Corne d'Abondance : double les quantités d'objets/pokédollars obtenus
+      const corneRow     = await get(`SELECT active FROM user_passives WHERE user_id = ? AND item = 'corneabondance'`, [user.id]);
+      const corneActive  = corneRow?.active === 1;
+
       const gen34Row = await get(`SELECT claimed FROM achievements WHERE user_id = ? AND achievement_id = 'unlock-gen3-4'`, [user.id]);
       const gen34Unlocked = Number(gen34Row?.claimed) === 1;
 
@@ -336,9 +340,11 @@ router.post("/useitem/:username", async (req, res) => {
         if (p.item === "pokemon") {
           await run(`INSERT OR IGNORE INTO captures (user_id, pokemon_name, is_shiny) VALUES (?,?,?)`, [user.id, p.pokemon.name, p.pokemon.isShiny ? 1 : 0]);
         } else if (p.item === "pokedollars") {
+          if (corneActive) p.qty *= 2;
           await run(`UPDATE inventory SET pokedollars = pokedollars + ? WHERE user_id = ?`, [p.qty, user.id]);
         } else {
           if (!validItem(p.item)) continue;
+          if (corneActive) p.qty *= 2;
           await run(`UPDATE inventory SET ${p.item} = COALESCE(${p.item},0) + ? WHERE user_id = ?`, [p.qty, user.id]);
         }
       }

@@ -3,7 +3,8 @@ import { run, get, all } from "../db.js";
 import { getIO } from "../socket.js";
 
 const router = Router();
-const LABELS = { charmechroma:"Charme Chroma", appat:"Appât", luckycoin:"Lucky Coin", glitch:"Glitch" };
+const LABELS = { charmechroma:"Charme Chroma", appat:"Appât", luckycoin:"Lucky Coin", glitch:"Glitch",
+  multiexp:"Multi Exp", corneabondance:"Corne d'Abondance", supercharmechroma:"Super Charme Chroma", superappat:"Super Appât" };
 
 async function getUserId(username) {
   const row = await get(`SELECT id FROM users WHERE username = ?`, [username]);
@@ -38,9 +39,24 @@ router.post("/:username/toggle", async (req, res) => {
     if (!row)          return res.status(404).json({ error: "Objet inconnu" });
     if (!row.unlocked) return res.status(403).json({ error: "Objet non débloqué" });
 
+    // Nombre de passifs activables simultanément : 2 une fois le dernier passif
+    // (Super Charme Chroma) débloqué, sinon 1.
+    const lastRow   = await get(`SELECT unlocked FROM user_passives WHERE user_id = ? AND item = 'supercharmechroma'`, [userId]);
+    const maxActive = lastRow?.unlocked ? 2 : 1;
+
     const newState = row.active ? 0 : 1;
-    await run(`UPDATE user_passives SET active = 0 WHERE user_id = ?`, [userId]);
-    if (newState === 1) {
+    if (newState === 0) {
+      await run(`UPDATE user_passives SET active = 0 WHERE user_id = ? AND item = ?`, [userId, item]);
+    } else if (maxActive === 1) {
+      // Un seul slot : le nouveau passif remplace l'actif courant.
+      await run(`UPDATE user_passives SET active = 0 WHERE user_id = ?`, [userId]);
+      await run(`UPDATE user_passives SET active = 1 WHERE user_id = ? AND item = ?`, [userId, item]);
+    } else {
+      // Deux slots : refuser au-delà du maximum, laisser le joueur en désactiver un.
+      const cnt = await get(`SELECT COUNT(*) AS c FROM user_passives WHERE user_id = ? AND active = 1`, [userId]);
+      if ((cnt?.c || 0) >= maxActive) {
+        return res.status(400).json({ error: `Maximum ${maxActive} passifs actifs simultanément` });
+      }
       await run(`UPDATE user_passives SET active = 1 WHERE user_id = ? AND item = ?`, [userId, item]);
     }
 

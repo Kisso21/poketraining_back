@@ -1,14 +1,14 @@
 import { Router } from "express";
 import { run, get, all, GEN1_POKEMONS, GEN3_POKEMONS, GEN4_POKEMONS } from "../db.js";
-import { XP_THRESHOLDS, MAX_LEVEL } from "./levels.js";
+import { XP_THRESHOLDS, MAX_LEVEL_BASE, maxLevelFor } from "./levels.js";
 
-function computeLevel(xp) {
+function computeLevel(xp, cap = MAX_LEVEL_BASE) {
   let level = 1;
   for (let i = 1; i < XP_THRESHOLDS.length; i++) {
     if (xp >= XP_THRESHOLDS[i]) level = i + 1;
     else break;
   }
-  return Math.min(level, MAX_LEVEL);
+  return Math.min(level, cap);
 }
 
 const router = Router();
@@ -87,6 +87,8 @@ const REWARDS = {
   "level-80":            40000,
   "level-90":            45000,
   "level-100":           50000,
+  "level-150":           75000,
+  "level-200":          100000,
   // Pokédex — compteurs
   "pokedex-normal-25":     500,
   "pokedex-normal-75":    1200,
@@ -142,6 +144,11 @@ const REWARDS = {
   "passif-appat":         1000,
   "passif-charmechroma":  2500,
   "passif-glitch":       15000,
+  // Passifs Gen 3 & 4
+  "passif-multiexp":          5000,
+  "passif-corneabondance":    8000,
+  "passif-superappat":       12000,
+  "passif-supercharmechroma":20000,
   // ── 40 nouveaux succès Gen 2 ─────────────────────────────────────────
   "pokedex-fouinette-line":        350,  "pokedex-hoothoot-line":         350,
   "pokedex-loupio-line":           400,  "pokedex-natu-line":             400,
@@ -432,6 +439,8 @@ const ITEM_REWARDS = {
   "level-80":              { lootbox: 3 },
   "level-90":              { lootbox: 3 },
   "level-100":             { masterball: 1 },
+  "level-150":             { masterball: 1, lootbox: 3 },
+  "level-200":             { masterball: 2, lootbox: 5 },
   // Pokédex — compteurs
   "pokedex-normal-25":     { pokeball: 2 },
   "pokedex-normal-75":     { superball: 1 },
@@ -725,6 +734,10 @@ const PASSIVE_REWARDS = {
   "passif-appat":        "appat",
   "passif-charmechroma": "charmechroma",
   "passif-glitch":       "glitch",
+  "passif-multiexp":          "multiexp",
+  "passif-corneabondance":    "corneabondance",
+  "passif-superappat":        "superappat",
+  "passif-supercharmechroma": "supercharmechroma",
 };
 
 // ── Succès basés sur le niveau ──────────────────────────────────────────────
@@ -752,6 +765,8 @@ const LEVEL_REQS = {
   "level-80":       80,
   "level-90":       90,
   "level-100":      100,
+  "level-150":      150,
+  "level-200":      200,
 };
 
 // ── Succès basés sur le Pokédex ─────────────────────────────────────────────
@@ -1066,6 +1081,11 @@ const POKEDEX_REQS = {
   "passif-appat":          { shinyCount: 3 },
   "passif-charmechroma":   { normalCount: 100 },
   "passif-glitch":         { totalCount: 120 },
+  // Passifs Gen 3 & 4 (captures gen 3/4 — nécessitent gen 3/4 débloquée)
+  "passif-multiexp":           { biomeCount: { count: 25,  names: [...GEN3_POKEMONS, ...GEN4_POKEMONS] } },
+  "passif-corneabondance":     { biomeCount: { count: 50,  names: [...GEN3_POKEMONS, ...GEN4_POKEMONS] } },
+  "passif-superappat":         { biomeCount: { count: 75,  names: [...GEN3_POKEMONS, ...GEN4_POKEMONS] } },
+  "passif-supercharmechroma":  { biomeCount: { count: 100, names: [...GEN3_POKEMONS, ...GEN4_POKEMONS] } },
   // ── 20 nouveaux succès ───────────────────────────────────────────
   "pokedex-ditto":         { all: ["Métamorph"] },
   "pokedex-fighting-gen1": { all: ["Machoc", "Kicklee", "Tygnon"] },
@@ -1376,8 +1396,14 @@ export async function checkAchievements(userId) {
   ]);
 
   const unlockedSet = new Set(existing.map(r => r.achievement_id));
+  // Plafond de niveau : 200 si la gen 3/4 est réclamée, sinon 100
+  const gen34Row = await get(
+    `SELECT claimed FROM achievements WHERE user_id = ? AND achievement_id = 'unlock-gen3-4'`,
+    [userId]
+  );
+  const levelCap = maxLevelFor(Number(gen34Row?.claimed) === 1);
   // Recalcul depuis l'XP pour éviter une colonne level désynchronisée
-  const level = Math.max(ts?.level || 1, computeLevel(ts?.xp || 0));
+  const level = Math.max(ts?.level || 1, computeLevel(ts?.xp || 0, levelCap));
   const toUnlock    = [];
 
   // Vérification par niveau

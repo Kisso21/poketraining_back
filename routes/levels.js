@@ -16,18 +16,46 @@ export const XP_THRESHOLDS = [
  27650, 28400, 29160, 29930, 30710, 31500, 32300, 33110, 33930, 34760,
  35600, 36450, 37310, 38180, 39060, 39950, 40850, 41760, 42680, 43610,
  44550, 45500, 46460, 47430, 48410, 49400, 50400, 51410, 52430, 53460,
+  // ── Niveaux 101-200 (débloqués par la gen 3/4) ──────────────────────────
+    54500,   55550,   56610,   57680,   58760,   59850,   60950,   62060,   63180,   64310,
+    65450,   66600,   67760,   68930,   70110,   71300,   72500,   73710,   74930,   76160,
+    77400,   78650,   79910,   81180,   82460,   83750,   85050,   86360,   87680,   89010,
+    90350,   91700,   93060,   94430,   95810,   97200,   98600,  100010,  101430,  102860,
+   104300,  105750,  107210,  108680,  110160,  111650,  113150,  114660,  116180,  117710,
+   119250,  120800,  122360,  123930,  125510,  127100,  128700,  130310,  131930,  133560,
+   135200,  136850,  138510,  140180,  141860,  143550,  145250,  146960,  148680,  150410,
+   152150,  153900,  155660,  157430,  159210,  161000,  162800,  164610,  166430,  168260,
+   170100,  171950,  173810,  175680,  177560,  179450,  181350,  183260,  185180,  187110,
+   189050,  191000,  192960,  194930,  196910,  198900,  200900,  202910,  204930,  206960,
 ];
-export const MAX_LEVEL        = 100;
+// Plafond de base = 100 ; débloque 200 quand la gen 3/4 est obtenue.
+export const MAX_LEVEL_BASE   = 100;
+export const MAX_LEVEL_GEN34  = 200;
+// Borne haute absolue de la courbe (conservée pour compatibilité d'import).
+export const MAX_LEVEL        = MAX_LEVEL_GEN34;
 const        POINTS_PER_LEVEL = 2;
 const        RESET_COST       = 50000;
 
-function computeLevel(xp) {
+// Plafond de niveau applicable selon le déblocage gen 3/4.
+export function maxLevelFor(gen34Unlocked) {
+  return gen34Unlocked ? MAX_LEVEL_GEN34 : MAX_LEVEL_BASE;
+}
+
+async function isGen34Unlocked(userId) {
+  const row = await get(
+    `SELECT claimed FROM achievements WHERE user_id = ? AND achievement_id = 'unlock-gen3-4'`,
+    [userId]
+  );
+  return Number(row?.claimed) === 1;
+}
+
+function computeLevel(xp, cap = MAX_LEVEL_BASE) {
   let level = 1;
   for (let i = 1; i < XP_THRESHOLDS.length; i++) {
     if (xp >= XP_THRESHOLDS[i]) level = i + 1;
     else break;
   }
-  return Math.min(level, MAX_LEVEL);
+  return Math.min(level, cap);
 }
 
 // GET /api/level/:userId
@@ -40,12 +68,13 @@ router.get("/:userId", async (req, res) => {
     );
     if (!ts) return res.status(404).json({ error: "Utilisateur introuvable" });
 
-    const currentLevel = computeLevel(ts.xp || 0);
+    const cap          = maxLevelFor(await isGen34Unlocked(req.user.id));
+    const currentLevel = computeLevel(ts.xp || 0, cap);
     if (currentLevel !== ts.level) {
       await run(`UPDATE trainer_stats SET level = ? WHERE user_id = ?`, [currentLevel, req.user.id]);
     }
     const xpForCurrent = XP_THRESHOLDS[currentLevel - 1] || 0;
-    const xpForNext    = currentLevel < MAX_LEVEL ? XP_THRESHOLDS[currentLevel] : null;
+    const xpForNext    = currentLevel < cap ? XP_THRESHOLDS[currentLevel] : null;
 
     res.json({
       level:               currentLevel,
@@ -93,13 +122,21 @@ router.post("/:userId/addxp", async (req, res) => {
       xpGain = Math.round(xpGain * (rd._multiplier || 2));
     }
 
+    // Passif Multi Exp : +25% d'XP tant qu'il est équipé
+    const multiexp = await get(
+      `SELECT active FROM user_passives WHERE user_id = ? AND item = 'multiexp'`,
+      [req.user.id]
+    );
+    if (multiexp?.active === 1) xpGain = Math.round(xpGain * 1.25);
+
     const ts = await get(`SELECT xp FROM trainer_stats WHERE user_id = ?`, [req.user.id]);
     if (!ts) return res.status(404).json({ error: "Utilisateur introuvable" });
 
+    const cap      = maxLevelFor(await isGen34Unlocked(req.user.id));
     const oldXp    = ts.xp || 0;
     const newXp    = oldXp + xpGain;
-    const oldLevel = computeLevel(oldXp);
-    const newLevel = computeLevel(newXp);
+    const oldLevel = computeLevel(oldXp, cap);
+    const newLevel = computeLevel(newXp, cap);
     const levelUp  = newLevel > oldLevel;
     const pointsToAdd = levelUp ? (newLevel - oldLevel) * POINTS_PER_LEVEL : 0;
 
