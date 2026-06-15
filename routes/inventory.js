@@ -200,17 +200,24 @@ router.post("/shop/:username/buy", async (req, res) => {
   const username = req.user.username;
   const { ballType, item } = req.body;
 
-  let cost, col, msg;
+  // Quantité optionnelle (rétro-compatible : défaut 1, plafonnée à 99)
+  let qty = parseInt(req.body.qty, 10);
+  if (!Number.isFinite(qty) || qty < 1) qty = 1;
+  qty = Math.min(qty, 99);
+
+  let unitCost, col, msg;
   if (ballType && BALL_PRICES[ballType]) {
-    cost = BALL_PRICES[ballType]; col = ballType;
-    msg = `Tu as acheté une ${ballType} !`;
+    unitCost = BALL_PRICES[ballType]; col = ballType;
+    msg = qty > 1 ? `Tu as acheté ${qty} ${ballType} !` : `Tu as acheté une ${ballType} !`;
   } else if (item && ITEM_PRICES[item]) {
-    cost = ITEM_PRICES[item]; col = item;
-    msg = `Tu as acheté un ${item} !`;
+    unitCost = ITEM_PRICES[item]; col = item;
+    msg = qty > 1 ? `Tu as acheté ${qty} ${item} !` : `Tu as acheté un ${item} !`;
   } else {
     return res.status(400).json({ error: "Achat invalide" });
   }
   if (!validItem(col)) return res.status(400).json({ error: "Objet invalide" });
+
+  const cost = unitCost * qty;
 
   try {
     const user = await getUserByUsername(username);
@@ -220,8 +227,8 @@ router.post("/shop/:username/buy", async (req, res) => {
     if ((inv?.pokedollars || 0) < cost) return res.status(400).json({ error: "Pas assez de Pokédollars" });
 
     await run(
-      `UPDATE inventory SET pokedollars = pokedollars - ?, ${col} = COALESCE(${col},0) + 1 WHERE user_id = ?`,
-      [cost, user.id]
+      `UPDATE inventory SET pokedollars = pokedollars - ?, ${col} = COALESCE(${col},0) + ? WHERE user_id = ?`,
+      [cost, qty, user.id]
     );
     const updated = await getInventoryByUsername(username);
     getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
@@ -239,21 +246,29 @@ router.post("/shop/:username/sell", async (req, res) => {
   if (!target || !SELL_PRICES[target] || !validItem(target))
     return res.status(400).json({ error: "Vente invalide" });
 
+  // Quantité optionnelle (défaut 1, plafonnée à 99 et au stock disponible)
+  let qty = parseInt(req.body.qty, 10);
+  if (!Number.isFinite(qty) || qty < 1) qty = 1;
+  qty = Math.min(qty, 99);
+
   try {
     const user = await getUserByUsername(username);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
 
     const inv = await get(`SELECT ${target} FROM inventory WHERE user_id = ?`, [user.id]);
-    if ((inv?.[target] || 0) <= 0) return res.status(400).json({ error: `Tu n'as pas de ${target} à vendre` });
+    const stock = inv?.[target] || 0;
+    if (stock <= 0) return res.status(400).json({ error: `Tu n'as pas de ${target} à vendre` });
 
-    const value = SELL_PRICES[target];
+    const sellQty = Math.min(qty, stock);
+    const value   = SELL_PRICES[target] * sellQty;
     await run(
-      `UPDATE inventory SET pokedollars = pokedollars + ?, ${target} = ${target} - 1 WHERE user_id = ?`,
-      [value, user.id]
+      `UPDATE inventory SET pokedollars = pokedollars + ?, ${target} = ${target} - ? WHERE user_id = ?`,
+      [value, sellQty, user.id]
     );
     const updated = await getInventoryByUsername(username);
     getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
-    res.json({ success: true, message: `Tu as vendu un ${target} pour ${value}₽ !`, inventory: updated, item: target });
+    const msg = sellQty > 1 ? `Tu as vendu ${sellQty} ${target} pour ${value}₽ !` : `Tu as vendu un ${target} pour ${value}₽ !`;
+    res.json({ success: true, message: msg, inventory: updated, item: target, sold: sellQty });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }
