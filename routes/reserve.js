@@ -23,19 +23,19 @@ const MYTHIC_IDS = new Set([
   385, 386,                   // Gen 3 : Jirachi, Deoxys
   489,490,491,492,493,        // Gen 4 : Phione, Manaphy, Darkrai, Shaymin, Arceus
 ]);
-const NO_EVO_IDS = new Set([83,115,122,123,124,125,126,127,128,131,132,143]);
+const NO_EVO_IDS = new Set([83,108,114,115,122,127,128,131,132,143,190,193,198,200,201,203,206,207,211,213,214,215,222,225,226,227,234,235]);
 
 function getSellPrice(pokemonData, isShiny) {
   const { id, stage } = pokemonData;
   let base;
-  if      (MYTHIC_IDS.has(id))  base = 3000;
-  else if (LEGEND_IDS.has(id))  base = 1500;
-  else if (FOSSIL_IDS.has(id))  base = 500;
-  else if (NO_EVO_IDS.has(id))  base = 300;
-  else if (stage === 3)         base = 300;
-  else if (stage === 2)         base = 200;
-  else                          base = 100;
-  return isShiny ? base * 3 : base;
+  if      (MYTHIC_IDS.has(id))  base = 15000;
+  else if (LEGEND_IDS.has(id))  base = 10000;
+  else if (FOSSIL_IDS.has(id))  base = 5000;
+  else if (NO_EVO_IDS.has(id))  base = 2000;
+  else if (stage === 3)         base = 5000;
+  else if (stage === 2)         base = 2000;
+  else                          base = 500;
+  return isShiny ? base * 2 : base;
 }
 
 // GET /api/reserve — liste la réserve du joueur
@@ -89,14 +89,8 @@ router.post("/sell", async (req, res) => {
       total += price;
     }
 
-    // Appliquer stat_tresorier (+3₽ par point) et Lucky Coin (×1.25)
-    const ts        = await get(`SELECT stat_tresorier FROM trainer_stats WHERE user_id = ?`, [userId]);
-    const tresorier = ts?.stat_tresorier || 0;
-    const baseGain  = total + tresorier * 3;
-
-    const passive     = await get(`SELECT active FROM user_passives WHERE user_id = ? AND item = 'luckycoin'`, [userId]);
-    const luckyCoin   = passive?.active === 1;
-    const gained      = luckyCoin ? Math.round(baseGain * 1.25) : baseGain;
+    // Vente Team Rocket : aucun bonus (ni Trésorier, ni Lucky Coin)
+    const gained = total;
 
     // Supprimer les entrées vendues
     await run(
@@ -138,8 +132,8 @@ router.post("/sell", async (req, res) => {
       success: true,
       earned: gained,
       baseEarned: total,
-      appliedBonus: luckyCoin,
-      tresorierBonus: tresorier * 3,
+      appliedBonus: false,
+      tresorierBonus: 0,
       newBalance: newBalance?.pokedollars ?? 0,
       sold: entries.length,
     });

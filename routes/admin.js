@@ -527,6 +527,31 @@ router.post("/teamrocket/reset", async (req, res) => {
   } catch { res.status(500).json({ error: "Erreur serveur" }); }
 });
 
+// POST /api/admin/teamrocket/bag/remove — retire un Pokémon du sac (par index)
+// body: { index }
+router.post("/teamrocket/bag/remove", async (req, res) => {
+  const index = parseInt(req.body.index, 10);
+  if (!Number.isInteger(index) || index < 0)
+    return res.status(400).json({ error: "Index invalide" });
+  try {
+    const row = await get("SELECT inventaire FROM team_rocket WHERE id = 1");
+    if (!row) return res.status(404).json({ error: "Team Rocket introuvable" });
+
+    let inventaire = [];
+    try { inventaire = JSON.parse(row.inventaire || "[]"); } catch { inventaire = []; }
+    if (index >= inventaire.length)
+      return res.status(400).json({ error: "Index hors limites" });
+
+    const [removed] = inventaire.splice(index, 1);
+    await run(
+      `UPDATE team_rocket SET inventaire = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1`,
+      [JSON.stringify(inventaire)]
+    );
+    await broadcastRocket();
+    res.json({ success: true, removed, inventaire });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
 // ─── Codes promo ──────────────────────────────────────────────────
 // GET /api/admin/promo-codes  → liste des codes
 router.get("/promo-codes", async (req, res) => {

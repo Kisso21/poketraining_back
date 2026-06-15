@@ -128,7 +128,7 @@ router.post("/click", async (req, res) => {
 
     // Drops items (upgrade requis)
     if (owned.includes("drop_items")) {
-      if (roll() < 0.00075 * dropMult) { drops.push("potion");      await run(`UPDATE inventory SET potion      = potion      + 1 WHERE user_id = ?`, [userId]); }
+      if (roll() < 0.000375 * dropMult) { drops.push("potion");      await run(`UPDATE inventory SET potion      = potion      + 1 WHERE user_id = ?`, [userId]); }
       if (roll() < 0.00025 * dropMult) { drops.push("resetball");   await run(`UPDATE inventory SET resetball   = resetball   + 1 WHERE user_id = ?`, [userId]); }
       if (roll() < 0.0001 * dropMult) { drops.push("superbonbon"); await run(`UPDATE inventory SET superbonbon = superbonbon + 1 WHERE user_id = ?`, [userId]); }
       if (roll() < 0.000025 * dropMult) { drops.push("lootbox");    await run(`UPDATE inventory SET lootbox     = lootbox     + 1 WHERE user_id = ?`, [userId]); }

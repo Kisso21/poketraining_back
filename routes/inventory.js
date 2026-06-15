@@ -6,7 +6,7 @@ const router = Router();
 
 const BALL_PRICES = { pokeball: 250, superball: 1000, hyperball: 2500, masterball: 100000 };
 const ITEM_PRICES = { superbonbon: 2000, potion: 500, lootbox: 3000, resetball: 5000 };
-const SELL_PRICES = { pokeball: 125, superball: 500, hyperball: 1250, masterball: 50000, resetball: 750, superbonbon: 1000, potion: 250, lootbox: 1500 };
+const SELL_PRICES = { pokeball: 125, superball: 500, hyperball: 1250, masterball: 50000, resetball: 2500, superbonbon: 1000, potion: 250, lootbox: 1500 };
 const VALID_ITEMS = new Set(["pokeball","superball","hyperball","masterball","resetball","superbonbon","potion","lootbox","pokedollars"]);
 
 function validItem(col) { return VALID_ITEMS.has(col); }
