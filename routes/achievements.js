@@ -170,6 +170,7 @@ const REWARDS = {
   "shiny-donphan":                1500,  "shiny-corsola":                1200,
   "shiny-snubbull-granbull":      1000,  "shiny-col-100":               40000,
   "shiny-gen2-starters-all":      5000,  "shiny-gen2-legendary-all":    10000,
+  "shiny-dex-251":               75000,
   // ── Déverrouillage Gen 3 & 4 ─────────────────────────────────────────────
   "unlock-gen3-4": 5000,
   // ── Succès Gen 3 ──
@@ -522,6 +523,7 @@ const ITEM_REWARDS = {
   "shiny-donphan":                 { hyperball: 1 },  "shiny-corsola":                 { hyperball: 1 },
   "shiny-snubbull-granbull":       { superball: 1 },  "shiny-col-100":                 { masterball: 1 },
   "shiny-gen2-starters-all":       { lootbox: 2 },   "shiny-gen2-legendary-all":      { masterball: 1 },
+  "shiny-dex-251":                 { masterball: 3, lootbox: 5 },
   // ── Déverrouillage Gen 3 & 4 ─────────────────────────────────────────────
   "unlock-gen3-4": { masterball: 1, lootbox: 3 },
   // ── Objets Gen 3 ──
@@ -1182,6 +1184,7 @@ const POKEDEX_REQS = {
   "shiny-col-100":                 { shinyCount: 100 },
   "shiny-gen2-starters-all":       { shinyAll: ["Méganium", "Typhlosion", "Aligatueur"] },
   "shiny-gen2-legendary-all":      { shinyAll: ["Raikou", "Entei", "Suicune", "Lugia", "Ho-Oh"] },
+  "shiny-dex-251":                 { shinyAll: [...GEN1_POKEMONS, ...GEN2_NAMES] },
   // ── Déverrouillage Gen 3 & 4 (succès caché) ──────────────────────────────
   "unlock-gen3-4": { normalAll: [...GEN1_POKEMONS, ...GEN2_NAMES] },
   // ── Pokédex Gen 3 ──

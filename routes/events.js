@@ -1,7 +1,7 @@
 import { Router }        from "express";
 import { run, get, all } from "../db.js";
 import { verifyToken, verifyAdmin, optionalToken } from "../middleware/auth.js";
-import { getIO, getConnectedUserIds } from "../socket.js";
+import { getIO } from "../socket.js";
 
 const router = Router();
 
@@ -26,6 +26,66 @@ function publicEvent(event) {
   return { ...event, rewardData: publicRd };
 }
 
+// ── Tirage au Sort : fenêtre d'inscription puis roue animée ─────────
+const TIRAGE_WHEEL_MS = 10000; // durée de l'animation de la roue côté client
+const tirageTimers = new Map(); // eventId -> timeout (fin d'inscription)
+
+// Exécute le tirage animé : choisit le gagnant, donne la récompense,
+// broadcast la roue, puis révèle le gagnant à la fin de l'animation.
+async function runTirageDraw(eventId) {
+  const event = await get(
+    `SELECT * FROM events WHERE id=? AND type='tirage' AND is_active=1 AND claimed_by IS NULL`,
+    [eventId]
+  );
+  if (!event) return null;
+
+  const entries  = await all(`SELECT user_id, username FROM tirage_entries WHERE event_id=?`, [eventId]);
+  const rd       = JSON.parse(event.reward_data || "{}");
+  const publicRd = Object.fromEntries(Object.entries(rd).filter(([k]) => !k.startsWith("_")));
+
+  // Aucun inscrit → on clôture sans gagnant
+  if (entries.length === 0) {
+    await run(`UPDATE events SET is_active=0 WHERE id=?`, [eventId]);
+    await run(`DELETE FROM tirage_entries WHERE event_id=?`, [eventId]);
+    getIO()?.emit("event:end", { reason: "expired" });
+    return { winner: null };
+  }
+
+  const win = entries[Math.floor(Math.random() * entries.length)];
+  await giveReward(win.user_id, publicRd);
+  await run(
+    `UPDATE events SET claimed_by=?, winner_username=?, is_active=0, claimed_at=datetime('now') WHERE id=?`,
+    [win.user_id, win.username, eventId]
+  );
+  await run(`DELETE FROM tirage_entries WHERE event_id=?`, [eventId]);
+
+  // Tout le monde voit la même roue (mêmes participants, même gagnant)
+  getIO()?.emit("tirage:draw", {
+    eventId,
+    participants: entries.map(e => e.username),
+    winner:       win.username,
+    durationMs:   TIRAGE_WHEEL_MS,
+    rewardData:   publicRd,
+  });
+
+  // Révélation synchronisée à la fin de l'animation
+  setTimeout(() => {
+    getIO()?.emit("event:claimed", { eventId, winner: win.username, rewardData: publicRd });
+    getIO()?.emit("event:end",     { reason: "claimed", winner: win.username });
+  }, TIRAGE_WHEEL_MS + 600);
+
+  return { winner: win.username };
+}
+
+function scheduleTirageDraw(eventId, delayMs) {
+  if (tirageTimers.has(eventId)) clearTimeout(tirageTimers.get(eventId));
+  const t = setTimeout(() => {
+    tirageTimers.delete(eventId);
+    runTirageDraw(eventId).catch(() => {});
+  }, Math.max(0, delayMs));
+  tirageTimers.set(eventId, t);
+}
+
 // ── GET /api/events/active ──────────────────────────────────────────
 // Note : datetime(ends_at) normalise le format ISO ("...T...Z") stocké par
 // new Date().toISOString() — une comparaison texte brute avec datetime('now')
@@ -45,7 +105,16 @@ router.get("/active", optionalToken, async (req, res) => {
         AND (type NOT IN ('premier_clic','devinette') OR claimed_by IS NULL)
       ORDER BY started_at DESC LIMIT 1
     `);
-    res.json(publicEvent(event));
+    const payload = publicEvent(event);
+    // Tirage en cours : compteur d'inscrits + statut perso
+    if (payload?.type === "tirage") {
+      const cnt = await get(`SELECT COUNT(*) AS cnt FROM tirage_entries WHERE event_id=?`, [payload.id]);
+      payload.tirageCount = cnt?.cnt ?? 0;
+      payload.tirageJoined = req.user
+        ? !!(await get(`SELECT 1 FROM tirage_entries WHERE event_id=? AND user_id=?`, [payload.id, req.user.id]))
+        : false;
+    }
+    res.json(payload);
   } catch { res.status(500).json({ error: "Erreur serveur" }); }
 });
 
@@ -100,25 +169,12 @@ router.post("/create", verifyAdmin, async (req, res) => {
 
     // Double XP / Pokémon Rare → auto-expiration via ends_at (géré par /active)
 
-    // Tirage au Sort → auto-draw si des joueurs sont connectés
+    // Tirage au Sort → ouvre une fenêtre d'inscription, puis roue animée à la fin
     if (type === "tirage") {
-      const connectedIds = getConnectedUserIds(req.user.id);
-      if (connectedIds.length > 0) {
-        const winnerId   = connectedIds[Math.floor(Math.random() * connectedIds.length)];
-        const winnerRow  = await get("SELECT id, username FROM users WHERE id = ?", [winnerId]);
-        if (winnerRow) {
-          const publicRd = Object.fromEntries(Object.entries(rewardData).filter(([k]) => !k.startsWith("_")));
-          await giveReward(winnerId, publicRd);
-          await run(`UPDATE events SET claimed_by=?, winner_username=?, is_active=0, claimed_at=datetime('now') WHERE id=?`,
-            [winnerId, winnerRow.username, result.lastID]);
-          payload.winner_username = winnerRow.username;
-          payload.is_active = 0;
-          getIO()?.emit("event:start",   payload);
-          getIO()?.emit("event:claimed", { eventId: result.lastID, winner: winnerRow.username, rewardData: publicRd });
-          setTimeout(() => getIO()?.emit("event:end", { reason: "claimed", winner: winnerRow.username }), 3000);
-          return res.json({ success: true, event: payload });
-        }
-      }
+      getIO()?.emit("event:start", payload);
+      const delay = endsAt ? new Date(endsAt).getTime() - Date.now() : 60000;
+      scheduleTirageDraw(result.lastID, delay);
+      return res.json({ success: true, event: payload });
     }
 
     getIO()?.emit("event:start", payload);
@@ -150,31 +206,41 @@ router.post("/cancel", verifyAdmin, async (req, res) => {
   } catch { res.status(500).json({ error: "Erreur serveur" }); }
 });
 
-// ── POST /api/events/draw (admin, tirage manuel) ────────────────────
+// ── POST /api/events/draw (admin, lance la roue immédiatement) ──────
 router.post("/draw", verifyAdmin, async (req, res) => {
   const { eventId } = req.body;
   try {
     const event = await get(`SELECT * FROM events WHERE id=? AND type='tirage' AND is_active=1 AND claimed_by IS NULL`, [eventId]);
     if (!event) return res.status(400).json({ error: "Aucun tirage actif" });
 
-    const connectedIds = getConnectedUserIds(req.user.id);
-    if (!connectedIds.length) return res.status(400).json({ error: "Aucun joueur connecté pour le tirage" });
+    const count = await get(`SELECT COUNT(*) AS cnt FROM tirage_entries WHERE event_id=?`, [eventId]);
+    if (!count?.cnt) return res.status(400).json({ error: "Aucun inscrit pour le tirage" });
 
-    const winnerId  = connectedIds[Math.floor(Math.random() * connectedIds.length)];
-    const winnerRow = await get("SELECT id, username FROM users WHERE id = ?", [winnerId]);
-    if (!winnerRow) return res.status(500).json({ error: "Erreur sélection gagnant" });
+    if (tirageTimers.has(eventId)) { clearTimeout(tirageTimers.get(eventId)); tirageTimers.delete(eventId); }
+    const result = await runTirageDraw(eventId);
+    res.json({ success: true, winner: result?.winner ?? null });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
 
-    const rewardData = JSON.parse(event.reward_data || "{}");
-    const publicRd   = Object.fromEntries(Object.entries(rewardData).filter(([k]) => !k.startsWith("_")));
+// ── POST /api/events/tirage/join (joueur s'inscrit au tirage) ───────
+router.post("/tirage/join", verifyToken, async (req, res) => {
+  const { eventId } = req.body;
+  try {
+    const event = await get(
+      `SELECT * FROM events WHERE id=? AND type='tirage' AND is_active=1 AND claimed_by IS NULL`,
+      [eventId]
+    );
+    if (!event) return res.status(400).json({ error: "Aucun tirage en cours" });
+    if (event.ends_at && new Date(event.ends_at).getTime() <= Date.now())
+      return res.status(400).json({ error: "Les inscriptions sont fermées" });
 
-    await giveReward(winnerId, publicRd);
-    await run(`UPDATE events SET claimed_by=?, winner_username=?, is_active=0, claimed_at=datetime('now') WHERE id=?`,
-      [winnerId, winnerRow.username, eventId]);
-
-    getIO()?.emit("event:claimed", { eventId, winner: winnerRow.username, rewardData: publicRd });
-    getIO()?.emit("event:end",     { reason: "claimed", winner: winnerRow.username });
-
-    res.json({ success: true, winner: winnerRow.username });
+    await run(
+      `INSERT OR IGNORE INTO tirage_entries (event_id, user_id, username) VALUES (?,?,?)`,
+      [eventId, req.user.id, req.user.username]
+    );
+    const count = await get(`SELECT COUNT(*) AS cnt FROM tirage_entries WHERE event_id=?`, [eventId]);
+    getIO()?.emit("tirage:entry", { eventId, count: count?.cnt ?? 0 });
+    res.json({ success: true, count: count?.cnt ?? 0 });
   } catch { res.status(500).json({ error: "Erreur serveur" }); }
 });
 
@@ -283,9 +349,17 @@ router.get("/my-vote/:eventId", verifyToken, async (req, res) => {
 // événements déjà expirés et on reprogramme les timers de ceux encore actifs.
 export async function resumeEventTimers() {
   try {
-    const rows = await all(`SELECT id, ends_at FROM events WHERE is_active = 1 AND ends_at IS NOT NULL`);
+    const rows = await all(`SELECT id, type, ends_at FROM events WHERE is_active = 1 AND ends_at IS NOT NULL`);
     for (const ev of rows) {
       const delay = new Date(ev.ends_at).getTime() - Date.now();
+
+      // Tirage au Sort : la fin de la fenêtre déclenche la roue, pas une expiration
+      if (ev.type === "tirage") {
+        scheduleTirageDraw(ev.id, delay);
+        console.log(`⏰ Tirage ${ev.id} repris (roue dans ${Math.max(0, Math.round(delay / 1000))}s)`);
+        continue;
+      }
+
       const expire = async () => {
         const upd = await run(`UPDATE events SET is_active = 0 WHERE id = ? AND is_active = 1`, [ev.id]);
         if (upd.changes > 0) getIO()?.emit("event:end", { reason: "expired" });

@@ -17,6 +17,17 @@ const GEN34_POKEMON = (() => { try { return JSON.parse(readFileSync(GEN34_PATH, 
 const ALL_POKEMON   = [...GEN12_POKEMON, ...GEN34_POKEMON];
 const POKEMON_MAP   = Object.fromEntries(ALL_POKEMON.map(p => [p.nom || p.name, p]));
 
+// Légendaires / mythiques (IDs alignés sur captureRates.js côté front)
+const LEGENDARY_IDS = new Set([
+  144, 145, 146, 150, 243, 244, 245, 249, 250,
+  377, 378, 379, 380, 381, 382, 383, 384,
+  480, 481, 482, 483, 484, 485, 486, 487, 488,
+]);
+const MYTHIC_IDS = new Set([
+  151, 251, 385, 386, 489, 490, 491, 492, 493,
+]);
+const isLegendaryOrMythic = (p) => !!p && (LEGENDARY_IDS.has(p.id) || MYTHIC_IDS.has(p.id));
+
 // Arènes valides pour le vote
 const VALID_ARENAS = [
   "pierre","ondine","bob","erika","koga","morgane","auguste",
@@ -42,10 +53,13 @@ const socketToUser = new Map();
 
 // Points ladder
 const POINTS = { win: 20, loss: -10, forfeit: -15, win_by_forfeit: 10 };
-const RECONNECT_MS      = 90_000;  // 90s pour se reconnecter
-const ACTION_TIMEOUT_MS = 30_000;  // 30s pour soumettre une action
-const TEAM_TIMEOUT_MS   = 60_000;  // 60s pour construire l'équipe
-const ARENA_TIMEOUT_MS  = 30_000;  // 30s pour voter l'arène
+const RECONNECT_MS      = 90_000;   // 90s pour se reconnecter
+const ACTION_TIMEOUT_MS = 30_000;   // 30s pour soumettre une action
+const TEAM_TIMEOUT_MS   = 300_000;  // 5 min pour construire l'équipe
+const TEAM_TIMER_GRACE  = 5_000;    // marge serveur pour laisser arriver l'auto-lock client
+const ARENA_TIMEOUT_MS  = 30_000;   // 30s pour voter l'arène
+const BAN_PER_PLAYER     = 4;       // chaque joueur banne 4 Pokémon
+const BAN_TURN_TIMEOUT_MS = 30_000; // 30s par tour de ban (auto-ban si AFK)
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -128,22 +142,29 @@ async function saveMatchToDB(match) {
 
 // ── Team validation ───────────────────────────────────────────────────────────
 
-async function validateTeam(username, pokemonNames, mode) {
+async function validateTeam(username, pokemonNames, mode, bannedNames = new Set()) {
   const size = mode === "3v3" ? 3 : 6;
-  if (!Array.isArray(pokemonNames) || pokemonNames.length !== size) {
-    return { ok: false, error: `Équipe de ${size} Pokémon requise` };
+  // Au moins 1 et au plus `size` Pokémon (le lock auto au timeout peut être partiel)
+  if (!Array.isArray(pokemonNames) || pokemonNames.length < 1 || pokemonNames.length > size) {
+    return { ok: false, error: `Équipe de 1 à ${size} Pokémon requise` };
   }
   const userId = await getUserId(username);
   if (!userId) return { ok: false, error: "Utilisateur introuvable" };
 
+  let legendaryCount = 0;
   for (const entry of pokemonNames) {
     const { name, isShiny } = entry;
     if (!POKEMON_MAP[name]) return { ok: false, error: `Pokémon inconnu : ${name}` };
+    if (bannedNames.has(name)) return { ok: false, error: `${name} est banni pour ce match` };
+    if (isLegendaryOrMythic(POKEMON_MAP[name])) legendaryCount++;
     const owned = await get(
       "SELECT id FROM captures WHERE user_id=? AND pokemon_name=? AND is_shiny=?",
       [userId, name, isShiny ? 1 : 0]
     );
     if (!owned) return { ok: false, error: `Vous ne possédez pas ${isShiny?"✦":""}${name}` };
+  }
+  if (legendaryCount > 1) {
+    return { ok: false, error: "Un seul Pokémon légendaire ou mythique autorisé par équipe" };
   }
 
   // Construire le tableau d'objets avec stats (depuis gen1_2.json) + shiny bonus
@@ -172,15 +193,71 @@ async function validateTeam(username, pokemonNames, mode) {
 
 // ── Match lifecycle ───────────────────────────────────────────────────────────
 
+// ── Phase de ban ────────────────────────────────────────────────────────────
+// Bans alternés : p1, p2, p1, p2, … jusqu'à BAN_PER_PLAYER bans chacun.
+function startBanPhase(io, match) {
+  match.state   = "ban_phase";
+  match.bans    = [];          // [{ by:"p1"|"p2", name, img }]
+  match.banTurn = "p1";
+  const deadline = Date.now() + BAN_TURN_TIMEOUT_MS;
+  match.banDeadline = deadline;
+  emitToMatch(io, match, "versus:phase", {
+    phase: "ban_phase", deadline, mode: match.mode,
+    bans: [], banTurn: "p1", banPerPlayer: BAN_PER_PLAYER,
+  });
+  match.banTimer = setTimeout(() => handleBanTimeout(io, match.id), BAN_TURN_TIMEOUT_MS);
+  saveMatchToDB(match);
+}
+
+function scheduleNextBanTurn(io, match) {
+  const deadline = Date.now() + BAN_TURN_TIMEOUT_MS;
+  match.banDeadline = deadline;
+  if (match.banTimer) clearTimeout(match.banTimer);
+  match.banTimer = setTimeout(() => handleBanTimeout(io, match.id), BAN_TURN_TIMEOUT_MS);
+  emitToMatch(io, match, "versus:ban_update", {
+    bans: match.bans, banTurn: match.banTurn, deadline,
+  });
+}
+
+function applyBan(io, match, player, name) {
+  match.bans.push({ by: player, name, img: POKEMON_MAP[name]?.img || null });
+
+  if (match.bans.length >= BAN_PER_PLAYER * 2) {
+    // Fin des bans → composition d'équipe
+    if (match.banTimer) { clearTimeout(match.banTimer); match.banTimer = null; }
+    emitToMatch(io, match, "versus:ban_update", { bans: match.bans, banTurn: null, deadline: null });
+    startTeamBuildingPhase(io, match);
+    return;
+  }
+  match.banTurn = match.banTurn === "p1" ? "p2" : "p1";
+  scheduleNextBanTurn(io, match);
+  saveMatchToDB(match);
+}
+
+function handleBanTimeout(io, matchId) {
+  const match = matches.get(matchId);
+  if (!match || match.state !== "ban_phase") return;
+  // Auto-ban d'un Pokémon aléatoire encore disponible
+  const banned = new Set(match.bans.map(b => b.name));
+  let pick = null;
+  for (let i = 0; i < 100; i++) {
+    const c  = ALL_POKEMON[Math.floor(Math.random() * ALL_POKEMON.length)];
+    const nm = c.nom || c.name;
+    if (nm && nm !== "MissingNo" && !banned.has(nm)) { pick = nm; break; }
+  }
+  if (pick) applyBan(io, match, match.banTurn, pick);
+}
+
 function startTeamBuildingPhase(io, match) {
   match.state = "team_building";
   const deadline = Date.now() + TEAM_TIMEOUT_MS;
   emitToMatch(io, match, "versus:phase", {
     phase: "team_building", deadline, mode: match.mode,
+    bans: match.bans || [],
     opponent: { p1: match.p2, p2: match.p1 },
   });
-  // Timeout : équipe auto si un joueur ne soumet pas
-  match.teamTimer = setTimeout(() => handleTeamTimeout(io, match.id), TEAM_TIMEOUT_MS);
+  // Timeout : verrouillage avec les Pokémon déjà choisis (auto-lock côté client + filet serveur)
+  match.teamTimer = setTimeout(() => handleTeamTimeout(io, match.id), TEAM_TIMEOUT_MS + TEAM_TIMER_GRACE);
   saveMatchToDB(match);
 }
 
@@ -417,7 +494,8 @@ export function setupVersusSocket(io) {
         const match = {
           id: matchId, mode,
           p1: u1, p2: u2,
-          state: "team_building",
+          state: "ban_phase",
+          bans: [], banTurn: "p1", banTimer: null, banDeadline: null,
           team1: null, team2: null,
           arenaVote1: null, arenaVote2: null, arena: null,
           battleState: null,
@@ -446,7 +524,7 @@ export function setupVersusSocket(io) {
         io.to(s2).emit("versus:matched", { matchId, opponent: u1, mode, youAre: "p2", myAvatar: avatar2, oppAvatar: avatar1 });
 
         await broadcastQueueUpdate(io, mode);
-        startTeamBuildingPhase(io, match);
+        startBanPhase(io, match);
       }
     });
 
@@ -473,7 +551,8 @@ export function setupVersusSocket(io) {
       if (!player) return;
       if (match[`team${player === "p1" ? 1 : 2}`]) return; // déjà soumis
 
-      const { ok, error, team: validatedTeam } = await validateTeam(username, team, match.mode);
+      const bannedNames = new Set((match.bans || []).map(b => b.name));
+      const { ok, error, team: validatedTeam } = await validateTeam(username, team, match.mode, bannedNames);
       if (!ok) { socket.emit("versus:error", { message: error }); return; }
 
       if (player === "p1") match.team1 = validatedTeam;
@@ -486,6 +565,23 @@ export function setupVersusSocket(io) {
         if (match.teamTimer) { clearTimeout(match.teamTimer); match.teamTimer = null; }
         startArenaVotePhase(io, match);
       }
+    });
+
+    // ── Bannir un Pokémon ───────────────────────────────────────
+    socket.on("versus:ban", ({ token, matchId, name }) => {
+      const user = verifySocketToken(token);
+      if (!user) return;
+      const username = user.username;
+      const match    = matches.get(matchId);
+      if (!match || match.state !== "ban_phase") return;
+
+      const player = getMatchPlayer(match, username);
+      if (!player) return;
+      if (player !== match.banTurn) return;                       // pas votre tour
+      if (!POKEMON_MAP[name] || name === "MissingNo") return;     // Pokémon invalide
+      if ((match.bans || []).some(b => b.name === name)) return;  // déjà banni
+
+      applyBan(io, match, player, name);
     });
 
     // ── Annuler équipe (avant que les deux aient soumis) ────────
@@ -610,6 +706,10 @@ export function setupVersusSocket(io) {
           opponent: getOpponent(match, username),
           youAre: getMatchPlayer(match, username),
           arena: match.arena,
+          bans: match.bans || [],
+          banTurn: match.state === "ban_phase" ? match.banTurn : null,
+          banDeadline: match.state === "ban_phase" ? match.banDeadline : null,
+          banPerPlayer: BAN_PER_PLAYER,
           team1Names: match.team1?.map(p => ({ name: BE.pokeName(p), img: p.imgAnim || p.gif_normal || p.img, imgBack: p.imgBack || p.gif_normal_back || p.img, isShiny: !!p.isShiny })),
           team2Names: match.team2?.map(p => ({ name: BE.pokeName(p), img: p.imgAnim || p.gif_normal || p.img, imgBack: p.imgBack || p.gif_normal_back || p.img, isShiny: !!p.isShiny })),
           battleState: match.battleState ? publicBattleState(match) : null,

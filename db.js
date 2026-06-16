@@ -394,6 +394,17 @@ export async function initDB() {
     FOREIGN KEY (user_id)  REFERENCES users(id)
   )`);
 
+  // Inscriptions au Tirage au Sort (événement admin)
+  await dbRun(`CREATE TABLE IF NOT EXISTS tirage_entries (
+    event_id  INTEGER NOT NULL,
+    user_id   INTEGER NOT NULL,
+    username  TEXT NOT NULL,
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (event_id, user_id),
+    FOREIGN KEY (event_id) REFERENCES events(id),
+    FOREIGN KEY (user_id)  REFERENCES users(id)
+  )`);
+
   await dbRun(`CREATE INDEX IF NOT EXISTS idx_captures_user      ON captures(user_id)`);
   await dbRun(`CREATE INDEX IF NOT EXISTS idx_reserve_user       ON pokemon_reserve(user_id)`);
   await dbRun(`CREATE INDEX IF NOT EXISTS idx_game_states_user   ON game_states(user_id, game_type)`);

@@ -101,14 +101,14 @@ router.post("/release", async (req, res) => {
   }
 });
 
-// POST /api/teamrocket/claim — le finder récupère 1 ou 2 Pokémon du butin
-// body: { picks: [index, ...] }
+// POST /api/teamrocket/claim — le finder récupère 1 SEUL Pokémon du butin
+// body: { picks: [index] }
 router.post("/claim", async (req, res) => {
   const userId = req.user.id;
   const { picks } = req.body;
 
-  if (!Array.isArray(picks) || picks.length < 1 || picks.length > 2) {
-    return res.status(400).json({ error: "Choisis 1 ou 2 Pokémon" });
+  if (!Array.isArray(picks) || picks.length !== 1) {
+    return res.status(400).json({ error: "Choisis 1 Pokémon" });
   }
   const uniquePicks = [...new Set(picks.map(Number))];
   if (uniquePicks.length !== picks.length || uniquePicks.some(i => !Number.isInteger(i) || i < 0)) {
