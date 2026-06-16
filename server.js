@@ -27,6 +27,7 @@ import pokeTradeRoutes   from "./routes/pokeTrade.js";
 import eventRoutes, { resumeEventTimers } from "./routes/events.js";
 import versusRoutes, { setupVersusSocket } from "./routes/versus.js";
 import jackpotRoutes from "./routes/jackpot.js";
+import crashRoutes from "./routes/crash.js";
 import teamRocketRoutes from "./routes/teamRocket.js";
 import notificationRoutes from "./routes/notifications.js";
 import { scheduleWeeklyReset } from "./jobs/ladderReset.js";
@@ -174,6 +175,8 @@ app.get("/api/cry/:userId/:gameType", optionalToken, async (req, res) => {
 
 // Casino jackpot — semi-public (optionalToken géré dans la route)
 app.use("/api/casino",                   jackpotRoutes);
+// Crash — state public, bet/cashout protégés dans la route
+app.use("/api/crash",                    crashRoutes);
 
 // Protégées (token requis)
 app.use("/api",               verifyToken, gameStateRoutes);
