@@ -119,19 +119,19 @@ router.post("/click", async (req, res) => {
     const dropMult  = boostMult * comboMult * ballMult;
 
     // Pokéball : toujours actif
-    if (roll() < 0.00075 * dropMult) { drops.push("pokeball"); await run(`UPDATE inventory SET pokeball = pokeball + 1 WHERE user_id = ?`, [userId]); }
+    if (roll() < 0.000375 * dropMult) { drops.push("pokeball"); await run(`UPDATE inventory SET pokeball = pokeball + 1 WHERE user_id = ?`, [userId]); }
 
     // Drops balls (upgrade requis)
-    if (owned.includes("superball")  && roll() < 0.0004 * dropMult) { drops.push("superball");  await run(`UPDATE inventory SET superball  = superball  + 1 WHERE user_id = ?`, [userId]); }
-    if (owned.includes("hyperball")  && roll() < 0.00005 * dropMult) { drops.push("hyperball");  await run(`UPDATE inventory SET hyperball  = hyperball  + 1 WHERE user_id = ?`, [userId]); }
-    if (owned.includes("masterball") && roll() < 0.000005 * dropMult) { drops.push("masterball"); await run(`UPDATE inventory SET masterball = masterball + 1 WHERE user_id = ?`, [userId]); }
+    if (owned.includes("superball")  && roll() < 0.0002 * dropMult) { drops.push("superball");  await run(`UPDATE inventory SET superball  = superball  + 1 WHERE user_id = ?`, [userId]); }
+    if (owned.includes("hyperball")  && roll() < 0.000025 * dropMult) { drops.push("hyperball");  await run(`UPDATE inventory SET hyperball  = hyperball  + 1 WHERE user_id = ?`, [userId]); }
+    if (owned.includes("masterball") && roll() < 0.0000025 * dropMult) { drops.push("masterball"); await run(`UPDATE inventory SET masterball = masterball + 1 WHERE user_id = ?`, [userId]); }
 
     // Drops items (upgrade requis)
     if (owned.includes("drop_items")) {
-      if (roll() < 0.000375 * dropMult) { drops.push("potion");      await run(`UPDATE inventory SET potion      = potion      + 1 WHERE user_id = ?`, [userId]); }
-      if (roll() < 0.00025 * dropMult) { drops.push("resetball");   await run(`UPDATE inventory SET resetball   = resetball   + 1 WHERE user_id = ?`, [userId]); }
-      if (roll() < 0.0001 * dropMult) { drops.push("superbonbon"); await run(`UPDATE inventory SET superbonbon = superbonbon + 1 WHERE user_id = ?`, [userId]); }
-      if (roll() < 0.000025 * dropMult) { drops.push("lootbox");    await run(`UPDATE inventory SET lootbox     = lootbox     + 1 WHERE user_id = ?`, [userId]); }
+      if (roll() < 0.0001875 * dropMult) { drops.push("potion");      await run(`UPDATE inventory SET potion      = potion      + 1 WHERE user_id = ?`, [userId]); }
+      if (roll() < 0.000125 * dropMult) { drops.push("resetball");   await run(`UPDATE inventory SET resetball   = resetball   + 1 WHERE user_id = ?`, [userId]); }
+      if (roll() < 0.00005 * dropMult) { drops.push("superbonbon"); await run(`UPDATE inventory SET superbonbon = superbonbon + 1 WHERE user_id = ?`, [userId]); }
+      if (roll() < 0.0000125 * dropMult) { drops.push("lootbox");    await run(`UPDATE inventory SET lootbox     = lootbox     + 1 WHERE user_id = ?`, [userId]); }
     }
 
     // Enregistrement de l'historique des drops
