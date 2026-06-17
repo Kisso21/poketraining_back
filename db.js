@@ -220,6 +220,8 @@ export async function initDB() {
     FOREIGN KEY(user_id) REFERENCES users(id),
     UNIQUE(user_id, game_type)
   )`);
+  // Récompense déjà encaissée pour la fenêtre de cooldown courante (anti double-crédit).
+  try { await dbRun(`ALTER TABLE game_states ADD COLUMN reward_claimed INTEGER NOT NULL DEFAULT 0`); } catch {}
 
   // Succès — inchangé
   await dbRun(`CREATE TABLE IF NOT EXISTS achievements (

@@ -1,6 +1,10 @@
 import { Router } from "express";
 import { run, get } from "../db.js";
+import { getIO } from "../socket.js";
 import https from "https";
+
+// Récompense identique au client (GameBase.calcReward) — max 500. Le serveur fait foi.
+const calcReward = (score) => score >= 100 ? 500 : score <= 0 ? 0 : Math.round(400 * score / 90);
 
 export const FR_TO_CRY_ID = {
   "Bulbizarre":1,"Herbizarre":2,"Florizarre":3,"Salamèche":4,"Reptincel":5,"Dracaufeu":6,
@@ -117,25 +121,54 @@ router.post("/game/reset", async (req, res) => {
   if (!gameType) return res.status(400).json({ error: "Paramètres manquants" });
   if (!VALID_GAME_TYPES.has(gameType)) return res.status(400).json({ error: "Type de jeu invalide" });
 
+  const userId = req.user.id;
+  const won    = req.body.won === true;
+  let score    = Number(req.body.score);
+  if (!Number.isFinite(score)) score = 0;
+  score = Math.max(0, Math.min(100, Math.round(score)));
+
   try {
     const existing = await get(
-      `SELECT next_available_at FROM game_states WHERE user_id = ? AND game_type = ?`,
-      [req.user.id, gameType]
+      `SELECT next_available_at, reward_claimed FROM game_states WHERE user_id = ? AND game_type = ?`,
+      [userId, gameType]
     );
     const alreadyActive = existing?.next_available_at && new Date(existing.next_available_at) > new Date();
 
+    // Une nouvelle fenêtre de cooldown rouvre le droit à UNE récompense (reward_claimed=0).
+    // Tant que la fenêtre est active, le gain ne peut être encaissé qu'une seule fois.
+    // Rejouer la requête → reward_claimed déjà à 1 → aucun gain. Le client ne peut donc
+    // plus se créditer à volonté (faille d'argent illimité fermée), et le montant est
+    // calculé par le serveur (calcReward), pas dicté par le client.
     if (!alreadyActive) {
       const nextAvailableAt = new Date(Date.now() + COOLDOWN_MS).toISOString();
       await run(
-        `INSERT INTO game_states (user_id, game_type, state, next_available_at)
-         VALUES (?,?,?,?)
+        `INSERT INTO game_states (user_id, game_type, state, next_available_at, reward_claimed)
+         VALUES (?,?,?,?,0)
          ON CONFLICT(user_id, game_type)
-         DO UPDATE SET next_available_at = excluded.next_available_at, updated_at = CURRENT_TIMESTAMP`,
-        [req.user.id, gameType, JSON.stringify({ reset: true }), nextAvailableAt]
+         DO UPDATE SET next_available_at = excluded.next_available_at, reward_claimed = 0, updated_at = CURRENT_TIMESTAMP`,
+        [userId, gameType, JSON.stringify({ reset: true }), nextAvailableAt]
       );
     }
-    const row = await get(`SELECT next_available_at FROM game_states WHERE user_id = ? AND game_type = ?`, [req.user.id, gameType]);
-    res.json({ success: true, nextAvailableAt: row?.next_available_at || null });
+
+    let reward = 0;
+    const claimed = alreadyActive ? (existing?.reward_claimed ? 1 : 0) : 0;
+    if (won && score > 0 && claimed === 0) {
+      const base      = calcReward(score);
+      const ts        = await get(`SELECT stat_tresorier FROM trainer_stats WHERE user_id = ?`, [userId]);
+      const tresorier = ts?.stat_tresorier || 0;
+      const lucky     = await get(`SELECT active FROM user_passives WHERE user_id = ? AND item = 'luckycoin'`, [userId]);
+      let gain = base + tresorier * 3;
+      if (lucky?.active === 1) gain = Math.round(gain * 1.25);
+      if (gain > 0) {
+        await run(`UPDATE inventory SET pokedollars = COALESCE(pokedollars,0) + ? WHERE user_id = ?`, [gain, userId]);
+        await run(`UPDATE game_states SET reward_claimed = 1 WHERE user_id = ? AND game_type = ?`, [userId, gameType]);
+        reward = gain;
+        const inv = await get(`SELECT pokedollars FROM inventory WHERE user_id = ?`, [userId]);
+        getIO()?.emit("sync:inventory", { userId, inventory: { pokedollars: inv?.pokedollars ?? 0 } });
+      }
+    }
+    const row = await get(`SELECT next_available_at FROM game_states WHERE user_id = ? AND game_type = ?`, [userId, gameType]);
+    res.json({ success: true, nextAvailableAt: row?.next_available_at || null, reward });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }

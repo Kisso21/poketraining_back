@@ -101,42 +101,24 @@ router.get("/pokedollars/:userId", async (req, res) => {
 // POST /api/pokedollars
 router.post("/pokedollars", async (req, res) => {
   const pokedollars = parseInteger(req.body.pokedollars);
-  const source  = typeof req.body.source === "string" ? req.body.source : null;
-  const isCasino = source === "casino";
-  const noBonus  = isCasino;
   const userId   = req.user.id;
 
   if (pokedollars == null || pokedollars === 0)
     return res.status(400).json({ error: "Montant invalide" });
-  // Le casino peut avoir des gains très élevés (jackpots) — on ne le limite pas
-  if (!isCasino && Math.abs(pokedollars) > MAX_POKEDOLLARS_DELTA)
+  // ⛔ AUCUN crédit positif accepté ici. Les gains sont attribués UNIQUEMENT par le
+  // serveur (fin de partie via /game/reset, casino via casinoGames.js, safari via
+  // safari-reward, etc.). Cette route ne sert plus qu'aux DÉPENSES (montant négatif),
+  // ce qui ferme définitivement la faille d'auto-crédit illimité.
+  if (pokedollars > 0)
+    return res.status(403).json({ error: "Crédit non autorisé : les gains sont attribués par le serveur." });
+  if (Math.abs(pokedollars) > MAX_POKEDOLLARS_DELTA)
     return res.status(400).json({ error: "Montant trop élevé" });
 
   try {
     const inv = await get(`SELECT pokedollars FROM inventory WHERE user_id = ?`, [userId]);
     if (!inv) return res.status(404).json({ error: "Introuvable" });
 
-    // Débit casino (négatif) : simple soustraction + contribution cagnotte
-    if (isCasino && pokedollars < 0) {
-      if ((inv.pokedollars || 0) + pokedollars < 0)
-        return res.status(400).json({ error: "Pas assez de Pokédollars" });
-      await run(`UPDATE inventory SET pokedollars = COALESCE(pokedollars,0) + ? WHERE user_id = ?`, [pokedollars, userId]);
-      addToJackpot(Math.max(1, Math.round(Math.abs(pokedollars) * 0.05))).catch(() => {});
-      const row = await get(`SELECT pokedollars FROM inventory WHERE user_id = ?`, [userId]);
-      getIO()?.emit("sync:inventory", { userId, inventory: { pokedollars: row.pokedollars } });
-      return res.json({ success: true, pokedollars: row.pokedollars, appliedBonus: false, gained: pokedollars });
-    }
-
-    // Gain casino (positif) : pas de bonus, pas de limite journalière
-    if (isCasino && pokedollars > 0) {
-      await run(`UPDATE inventory SET pokedollars = COALESCE(pokedollars,0) + ? WHERE user_id = ?`, [pokedollars, userId]);
-      const row = await get(`SELECT pokedollars FROM inventory WHERE user_id = ?`, [userId]);
-      checkCasinoUnlock(userId, row.pokedollars).catch(() => {});
-      getIO()?.emit("sync:inventory", { userId, inventory: { pokedollars: row.pokedollars } });
-      return res.json({ success: true, pokedollars: row.pokedollars, appliedBonus: false, gained: pokedollars });
-    }
-
-    // Autres sources : bonus tresorier + luckycoin + limite journalière
+    // Bonus tresorier + luckycoin
     const ts          = await get(`SELECT stat_tresorier FROM trainer_stats WHERE user_id = ?`, [userId]);
     const tresorier   = ts?.stat_tresorier || 0;
     const baseGain    = pokedollars > 0 ? pokedollars + tresorier * 3 : pokedollars;

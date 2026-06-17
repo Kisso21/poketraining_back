@@ -408,9 +408,38 @@ router.post("/useitem/:username/confirm-superbonbon", async (req, res) => {
 });
 
 // POST /api/inventory/safari-reward/:username  — donner un item/pokédollars comme récompense safari
+// Distribution Pokédollars du Safari (miroir de la table client) — le SERVEUR
+// tire le montant, le client ne le dicte plus.
+const SAFARI_PD_TIERS = [
+  { w: 28, min: 50,   max: 200  },
+  { w: 15, min: 200,  max: 500  },
+  { w: 7,  min: 500,  max: 900  },
+  { w: 5,  min: 900,  max: 1500 },
+  { w: 2,  min: 1500, max: 2500 },
+];
+
 router.post("/safari-reward/:username", async (req, res) => {
   const username = req.user.username;
   const { item, qty } = req.body;
+
+  // Récompense Pokédollars : montant tiré côté serveur (anti-forge).
+  if (item === "pokedollars") {
+    try {
+      const user = await getUserByUsername(username);
+      if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+      const total = SAFARI_PD_TIERS.reduce((s, t) => s + t.w, 0);
+      let r = Math.random() * total, tier = SAFARI_PD_TIERS[0];
+      for (const t of SAFARI_PD_TIERS) { if (r < t.w) { tier = t; break; } r -= t.w; }
+      const amount = tier.min + Math.floor(Math.random() * (tier.max - tier.min + 1));
+      await run(`UPDATE inventory SET pokedollars = COALESCE(pokedollars,0) + ? WHERE user_id = ?`, [amount, user.id]);
+      const updated = await getInventoryByUsername(username);
+      getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
+      return res.json({ success: true, item: "pokedollars", amount });
+    } catch (err) {
+      return res.status(500).json({ error: "Erreur serveur" });
+    }
+  }
+
   const ITEM_COLS = ["pokeball","superball","hyperball","masterball","resetball","superbonbon","potion","lootbox"];
   if (!item || !ITEM_COLS.includes(item) || !Number.isInteger(qty) || qty < 1 || qty > 3) {
     return res.status(400).json({ error: "Récompense invalide" });
