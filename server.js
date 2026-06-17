@@ -65,8 +65,8 @@ app.use("/api", rateLimit({
 }));
 
 // PokéClick : pas de rate limit strict (autoclick = beaucoup de requêtes légitimes)
-app.use("/api/pokeclick/click",     rateLimit({ windowMs: 1000, max: 20, message: { error: "Trop vite !" } }));
-app.use("/api/pokeclick/autoclick", rateLimit({ windowMs: 1000, max: 20, message: { error: "Trop vite !" } }));
+app.use("/api/pokeclick/click",     rateLimit({ windowMs: 1000, max: 30, message: { error: "Trop vite !" } }));
+app.use("/api/pokeclick/autoclick", rateLimit({ windowMs: 1000, max: 30, message: { error: "Trop vite !" } }));
 
 // Rate limiting auth : 50 tentatives/heure
 const authLimiter = rateLimit({

@@ -284,6 +284,17 @@ export async function initDB() {
     FOREIGN KEY(user_id) REFERENCES users(id)
   )`);
 
+  // PokéClick — endurance autoritative côté serveur (ancre {cur, ts} par Pokémon).
+  // Empêche la triche : le client ne décide plus de son endurance.
+  await dbRun(`CREATE TABLE IF NOT EXISTS pokeclick_stamina (
+    user_id INTEGER NOT NULL,
+    pokemon TEXT NOT NULL,
+    cur     REAL NOT NULL,
+    ts      INTEGER NOT NULL,
+    PRIMARY KEY(user_id, pokemon),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  )`);
+
   // Historique drops PokéClick
   await dbRun(`CREATE TABLE IF NOT EXISTS pokeclick_drop_log (
     user_id INTEGER NOT NULL,

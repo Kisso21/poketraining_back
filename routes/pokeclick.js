@@ -1,7 +1,49 @@
 import { Router } from "express";
+import { readFileSync } from "fs";
 import { run, get, all } from "../db.js";
 
 const router = Router();
+
+// ── Données Pokémon (HP) pour l'endurance — chargées une seule fois ──────────
+// Mêmes fichiers que le front (/data/...) pour que les valeurs HP coïncident.
+const POKEMON_HP = (() => {
+  const map = {};
+  for (const f of ["/var/www/html/data/gen1_2.json", "/var/www/html/data/gen3_4.json"]) {
+    try {
+      const arr = JSON.parse(readFileSync(f, "utf8"));
+      for (const p of arr) {
+        const name = p.nom || p.name;
+        if (name) map[name] = p.hp ?? 45;
+      }
+    } catch { /* fichier absent : on ignore */ }
+  }
+  return map;
+})();
+
+// ── Endurance (miroir exact de la logique client) ───────────────────────────
+const STAMINA_PER_HP = 6;
+const REGEN_MIN_MS   = 1 * 3600 * 1000;   // 1 h (Pokémon fragile)
+const REGEN_MAX_MS   = 4 * 3600 * 1000;   // 4 h (Pokémon endurant)
+const maxStaminaFor  = (hp) => Math.max(60, Math.round((hp || 45) * STAMINA_PER_HP));
+const regenMsFor     = (hp) => {
+  const f = Math.max(0, Math.min(1, ((hp || 45) - 20) / (150 - 20)));
+  return REGEN_MIN_MS + f * (REGEN_MAX_MS - REGEN_MIN_MS);
+};
+// Endurance courante à partir de l'ancre {cur, ts} (régénère au repos).
+function currentStamina(rec, hp) {
+  const max = maxStaminaFor(hp);
+  if (!rec) return max; // jamais utilisé → plein
+  const regen = ((Date.now() - rec.ts) / regenMsFor(hp)) * max;
+  return Math.max(0, Math.min(max, rec.cur + regen));
+}
+const loadStaminaRec = (userId, pokemon) =>
+  get(`SELECT cur, ts FROM pokeclick_stamina WHERE user_id = ? AND pokemon = ?`, [userId, pokemon]);
+const saveStaminaRec = (userId, pokemon, cur, ts) =>
+  run(`INSERT INTO pokeclick_stamina (user_id, pokemon, cur, ts) VALUES (?,?,?,?)
+       ON CONFLICT(user_id, pokemon) DO UPDATE SET cur = ?, ts = ?`,
+      [userId, pokemon, cur, ts, cur, ts]);
+const ownsPokemon = async (userId, pokemon) =>
+  !!(await get(`SELECT 1 FROM captures WHERE user_id = ? AND pokemon_name = ? LIMIT 1`, [userId, pokemon]));
 
 function getDailyLimit(ownedKeys) {
   if (ownedKeys.includes("goldball"))   return 10000;
@@ -92,7 +134,7 @@ router.post("/buy", async (req, res) => {
 
 // POST /click
 router.post("/click", async (req, res) => {
-  const { humanClick, combo } = req.body;
+  const { combo, pokemon, auto } = req.body;
   const userId = req.user.id;
 
   try {
@@ -102,6 +144,28 @@ router.post("/click", async (req, res) => {
 
     const earned = await getDailyEarned(userId);
     if (earned >= dailyLimit) return res.json({ success: true, gained: 0, remaining: 0, drops: [] });
+
+    // ── Endurance (auto-clic uniquement) : autoritative côté serveur ──────────
+    // Le clic manuel ne consomme pas d'endurance (comportement historique).
+    // Vaut pour le Pokémon actif comme pour le remplaçant qui vient d'être permuté :
+    // chaque Pokémon a sa propre ancre, on valide celui que le client envoie.
+    let stamina = null, staminaMax = null;
+    if (auto) {
+      const name = typeof pokemon === "string" ? pokemon : null;
+      if (!name || !(name in POKEMON_HP) || !(await ownsPokemon(userId, name))) {
+        return res.json({ success: true, gained: 0, remaining: Math.max(0, dailyLimit - earned), drops: [], exhausted: true });
+      }
+      const hp = POKEMON_HP[name];
+      staminaMax = maxStaminaFor(hp);
+      const cur  = currentStamina(await loadStaminaRec(userId, name), hp);
+      if (cur < 1) {
+        // Ré-ancre pour figer la régénération courante, puis refuse le crédit/drop.
+        await saveStaminaRec(userId, name, cur, Date.now());
+        return res.json({ success: true, gained: 0, remaining: Math.max(0, dailyLimit - earned), drops: [], exhausted: true, stamina: cur, staminaMax });
+      }
+      stamina = cur - 1;
+      await saveStaminaRec(userId, name, stamina, Date.now());
+    }
 
     // Combo (×0.1 par tranche de 20 clics, max ×2.0) — ne multiplie QUE les drops
     const comboMult = Math.min(2.0, 1 + Math.floor(Math.max(0, combo || 0) / 20) * 0.1);
@@ -149,9 +213,23 @@ router.post("/click", async (req, res) => {
     }
 
     const newEarned = Math.min(dailyLimit, earned + reward);
-    res.json({ success: true, gained: reward, comboMult, remaining: Math.max(0, dailyLimit - newEarned), drops, dailyLimit });
+    res.json({ success: true, gained: reward, comboMult, remaining: Math.max(0, dailyLimit - newEarned), drops, dailyLimit, stamina, staminaMax });
   } catch (err) {
     console.error("Erreur click:", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// GET /stamina/:userId — ancres d'endurance de tous les Pokémon de l'utilisateur
+// (actif + remplaçant + tous ceux déjà utilisés). Le front affiche la régén en
+// prédisant localement, mais le serveur reste seul juge lors des clics.
+router.get("/stamina/:userId", async (req, res) => {
+  try {
+    const rows = await all(`SELECT pokemon, cur, ts FROM pokeclick_stamina WHERE user_id = ?`, [req.user.id]);
+    const map = {};
+    for (const r of rows) map[r.pokemon] = { cur: r.cur, ts: r.ts };
+    res.json(map);
+  } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
@@ -201,9 +279,10 @@ router.post("/autoclick", async (req, res) => {
   }
 });
 
-// POST /heal — consomme 1 Potion pour restaurer l'endurance d'un Pokémon (PokéClick)
+// POST /heal — consomme 1 Potion pour restaurer 20 % d'endurance d'un Pokémon
 router.post("/heal", async (req, res) => {
   const userId = req.user.id;
+  const { pokemon } = req.body;
   try {
     // Décrément atomique : ne réussit que s'il reste au moins 1 Potion
     const upd = await run(
@@ -212,7 +291,18 @@ router.post("/heal", async (req, res) => {
     );
     if (!upd.changes) return res.status(400).json({ error: "Aucune Potion disponible" });
     const inv = await get(`SELECT potion FROM inventory WHERE user_id = ?`, [userId]);
-    res.json({ success: true, potion: inv?.potion ?? 0 });
+
+    // Restauration d'endurance autoritative (+20 % du max) pour le Pokémon ciblé.
+    let stamina = null, staminaMax = null;
+    const name = typeof pokemon === "string" ? pokemon : null;
+    if (name && (name in POKEMON_HP)) {
+      const hp = POKEMON_HP[name];
+      staminaMax = maxStaminaFor(hp);
+      const cur  = currentStamina(await loadStaminaRec(userId, name), hp);
+      stamina = Math.min(staminaMax, cur + staminaMax * 0.2);
+      await saveStaminaRec(userId, name, stamina, Date.now());
+    }
+    res.json({ success: true, potion: inv?.potion ?? 0, stamina, staminaMax });
   } catch (err) {
     console.error("Erreur heal:", err);
     res.status(500).json({ error: "Erreur serveur" });
