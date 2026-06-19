@@ -283,7 +283,21 @@ router.post("/autoclick", async (req, res) => {
 router.post("/heal", async (req, res) => {
   const userId = req.user.id;
   const { pokemon } = req.body;
+  const name = typeof pokemon === "string" ? pokemon : null;
+  // Valide AVANT de consommer : un Pokémon inconnu ne doit jamais gâcher une Potion.
+  if (!name || !(name in POKEMON_HP)) {
+    return res.status(400).json({ error: "Pokémon invalide" });
+  }
   try {
+    const hp         = POKEMON_HP[name];
+    const staminaMax = maxStaminaFor(hp);
+    const cur        = currentStamina(await loadStaminaRec(userId, name), hp);
+
+    // Déjà au max : on ne consomme pas de Potion (évite le gaspillage sur double-clic).
+    if (cur >= staminaMax) {
+      return res.json({ success: true, alreadyFull: true, stamina: cur, staminaMax });
+    }
+
     // Décrément atomique : ne réussit que s'il reste au moins 1 Potion
     const upd = await run(
       `UPDATE inventory SET potion = potion - 1 WHERE user_id = ? AND potion > 0`,
@@ -293,15 +307,9 @@ router.post("/heal", async (req, res) => {
     const inv = await get(`SELECT potion FROM inventory WHERE user_id = ?`, [userId]);
 
     // Restauration d'endurance autoritative (+20 % du max) pour le Pokémon ciblé.
-    let stamina = null, staminaMax = null;
-    const name = typeof pokemon === "string" ? pokemon : null;
-    if (name && (name in POKEMON_HP)) {
-      const hp = POKEMON_HP[name];
-      staminaMax = maxStaminaFor(hp);
-      const cur  = currentStamina(await loadStaminaRec(userId, name), hp);
-      stamina = Math.min(staminaMax, cur + staminaMax * 0.2);
-      await saveStaminaRec(userId, name, stamina, Date.now());
-    }
+    const stamina = Math.min(staminaMax, cur + staminaMax * 0.2);
+    await saveStaminaRec(userId, name, stamina, Date.now());
+
     res.json({ success: true, potion: inv?.potion ?? 0, stamina, staminaMax });
   } catch (err) {
     console.error("Erreur heal:", err);
