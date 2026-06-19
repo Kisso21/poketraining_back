@@ -88,30 +88,33 @@ const GRATTE_PRIZES = [
   { key: "master-ball", label: "Master Ball", gain: 3000, w: 1  },
 ];
 const PRIZE_POOL = GRATTE_PRIZES.flatMap(p => Array(p.w).fill(p));
-const WIN_PROB   = 15 / 126; // identique au client (RTP ~90 %)
-const NUGGET     = { key: "nugget", label: "Minerai", gain: 0 };
+const NUGGET = { key: "nugget", label: "Minerai", gain: 0 };
 
-// Construit une grille 3×3 cohérente avec l'issue décidée par le serveur.
-// win=true : le prix apparaît exactement sur 3 cases (les gagnantes), aucun autre
-// triplet. win=false : aucun symbole n'apparaît 3 fois (winPositions vide).
-function buildScratchGrid(prize, win) {
+// Tickets en cours, en mémoire (comme le Hi-Lo) : un seul ticket non résolu par
+// joueur. Un redémarrage serveur annule un ticket non gratté (mise déjà débitée
+// perdue — cas rare et accepté).
+const scratchTickets = new Map(); // userId -> { prize, winPositions, gain, ticketId }
+
+// Construit une grille 3×3 qui contient TOUJOURS exactement 3 fois le symbole-prix
+// (les 3 cases gagnantes, à des positions aléatoires). Les 6 autres cases sont du
+// remplissage (minerai ou autres symboles plafonnés à 2) : jamais un second trio.
+// Le joueur gagne s'il découvre les 3 cases gagnantes parmi ses 5 grattages, soit
+// P = C(6,2)/C(9,5) = 15/126 ≈ 11,9 % (RTP ~90 %).
+function buildScratchGrid(prize) {
   const cells = Array(9).fill(null);
   const pos   = [0,1,2,3,4,5,6,7,8];
   for (let i = 8; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pos[i], pos[j]] = [pos[j], pos[i]]; }
-  const winPositions = win ? pos.slice(0, 3) : [];
+  const winPositions = pos.slice(0, 3);
   const winSet = new Set(winPositions);
   const others = GRATTE_PRIZES.filter(p => p.key !== prize.key);
   const used   = {};
-  // Sur un ticket perdant, le prix lui-même est plafonné à 2 occurrences.
-  const cap = (key) => (key === prize.key && !win ? 2 : 2);
   for (let i = 0; i < 9; i++) {
     if (winSet.has(i)) { cells[i] = prize; continue; }
     let sym;
     if (Math.random() < 0.55) {
       sym = NUGGET;
     } else {
-      const pool = win ? others : GRATTE_PRIZES;
-      const avail = pool.filter(p => (used[p.key] || 0) < cap(p.key));
+      const avail = others.filter(p => (used[p.key] || 0) < 2);
       sym = avail.length ? avail[Math.floor(Math.random() * avail.length)] : NUGGET;
     }
     used[sym.key] = (used[sym.key] || 0) + 1;
@@ -120,7 +123,8 @@ function buildScratchGrid(prize, win) {
   return { cells, winPositions };
 }
 
-// POST /api/casino/scratch/buy
+// POST /api/casino/scratch/buy — débite le ticket et génère la grille. L'issue
+// n'est PAS décidée ici : elle dépend des cases que le joueur grattera (/claim).
 router.post("/scratch/buy", async (req, res) => {
   const userId = req.user.id;
   try {
@@ -131,13 +135,38 @@ router.post("/scratch/buy", async (req, res) => {
     await debit(userId, TICKET_COST);
 
     const prize = PRIZE_POOL[Math.floor(Math.random() * PRIZE_POOL.length)];
-    const win   = Math.random() < WIN_PROB;
-    const { cells, winPositions } = buildScratchGrid(prize, win);
-    const gain  = win ? prize.gain : 0;
-    await credit(userId, gain);
+    const { cells, winPositions } = buildScratchGrid(prize);
+    const ticketId = (scratchTickets.get(userId)?.ticketId || 0) + 1;
+    scratchTickets.set(userId, { prize, winPositions, gain: prize.gain, ticketId });
 
+    const balance = await syncBalance(userId, 0);
+    res.json({ cells, prize, ticketId, balance });
+  } catch {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/casino/scratch/claim { ticketId, revealed:number[] } — résout le ticket :
+// gagné si les 5 cases grattées contiennent les 3 cases gagnantes. Crédite le gain.
+router.post("/scratch/claim", async (req, res) => {
+  const userId = req.user.id;
+  const ticket = scratchTickets.get(userId);
+  if (!ticket) return res.status(400).json({ error: "Aucun ticket en cours" });
+
+  const { ticketId } = req.body || {};
+  if (ticketId !== ticket.ticketId) return res.status(400).json({ error: "Ticket invalide" });
+
+  const revealed = Array.isArray(req.body?.revealed) ? req.body.revealed : [];
+  const set = new Set(revealed.filter(n => Number.isInteger(n) && n >= 0 && n <= 8));
+  if (set.size > 5) return res.status(400).json({ error: "Trop de cases grattées" });
+
+  const win  = ticket.winPositions.every(p => set.has(p));
+  const gain = win ? ticket.gain : 0;
+  try {
+    await credit(userId, gain);
+    scratchTickets.delete(userId); // un seul claim par ticket
     const balance = await syncBalance(userId, gain);
-    res.json({ win, prize, gain, cells, winPositions, balance });
+    res.json({ win, gain, prize: ticket.prize, winPositions: ticket.winPositions, balance });
   } catch {
     res.status(500).json({ error: "Erreur serveur" });
   }
