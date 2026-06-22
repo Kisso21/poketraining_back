@@ -82,16 +82,17 @@ router.get("/:username", async (req, res) => {
       // defeated est true si soit l'arène a été vaincue, soit le badge existe en base
       const defeated = (row ? !!row.defeated : false) || (cfg.badge ? badgeSet.has(cfg.badge) : false);
       let unlocked = row ? !!row.unlocked : i === 0;
-      // La 1re arène Élite n'est jouable qu'une fois la condition gen 3/4 remplie ;
-      // les arènes Élite sont masquées tant que la condition n'est pas remplie.
-      if (cfg.id === FIRST_ELITE_ID) unlocked = eliteUnlocked;
+      // La 1re arène Élite se débloque via la règle Sandra + succès gen 3/4,
+      // OU si un admin l'a forcée manuellement (user_arenes.unlocked = 1).
+      if (cfg.id === FIRST_ELITE_ID) unlocked = eliteUnlocked || (row ? !!row.unlocked : false);
       return {
         ...cfg,
         unlocked,
         defeated,
         inProgress: row ? !!row.in_progress : false,
         lastTry:    row?.last_try ? row.last_try.replace(' ', 'T') + 'Z' : null,
-        eliteLocked: cfg.tier === "elite" && !eliteUnlocked,
+        // Verrouillée tant que ni la règle ni un déblocage manuel ne l'ouvrent.
+        eliteLocked: cfg.tier === "elite" && !eliteUnlocked && !unlocked,
       };
     });
     res.json(result);
@@ -252,17 +253,37 @@ router.post("/defeat/:username", async (req, res) => {
 router.get("/admin/user/:username", async (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Admin requis" });
   try {
+    const username = req.params.username;
     const rows = await all(
       `SELECT arene, unlocked, defeated, last_try FROM user_arenes WHERE username = ?`,
-      [req.params.username]
+      [username]
     );
     const rowMap = Object.fromEntries((rows || []).map(r => [r.arene, r]));
-    const result = ARENE_CONFIG.map((cfg, i) => ({
-      ...cfg,
-      unlocked: rowMap[cfg.id] ? !!rowMap[cfg.id].unlocked : i === 0,
-      defeated: rowMap[cfg.id] ? !!rowMap[cfg.id].defeated : false,
-      lastTry:  rowMap[cfg.id]?.last_try ? rowMap[cfg.id].last_try.replace(' ', 'T') + 'Z' : null,
-    }));
+
+    // Même logique que la vue joueur : un badge en base vaut "vaincue",
+    // et l'Élite se débloque via Sandra + succès gen 3/4 (ou un unlock manuel).
+    const uRow = await get(`SELECT id FROM users WHERE username = ?`, [username]);
+    const badgeRows = uRow ? await all(
+      `SELECT badge FROM user_badges WHERE user_id = ? AND unlocked = 1`, [uRow.id]
+    ) : [];
+    const badgeSet = new Set(badgeRows.map(b => b.badge));
+    const sandraRow = rowMap["sandra"];
+    const sandraDefeated = (sandraRow ? !!sandraRow.defeated : false)
+      || badgeSet.has(ARENE_MAP["sandra"].badge);
+    const eliteUnlocked = sandraDefeated && await gen34Claimed(username);
+
+    const result = ARENE_CONFIG.map((cfg, i) => {
+      const row = rowMap[cfg.id];
+      const defeated = (row ? !!row.defeated : false) || (cfg.badge ? badgeSet.has(cfg.badge) : false);
+      let unlocked = row ? !!row.unlocked : i === 0;
+      if (cfg.id === FIRST_ELITE_ID) unlocked = eliteUnlocked || (row ? !!row.unlocked : false);
+      return {
+        ...cfg,
+        unlocked,
+        defeated,
+        lastTry: row?.last_try ? row.last_try.replace(' ', 'T') + 'Z' : null,
+      };
+    });
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
