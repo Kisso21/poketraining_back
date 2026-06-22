@@ -2,6 +2,9 @@ import { Router } from "express";
 import { run, get } from "../db.js";
 import { getIO } from "../socket.js";
 import https from "https";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 
 // Récompense identique au client (GameBase.calcReward) — max 500. Le serveur fait foi.
 const calcReward = (score) => score >= 100 ? 500 : score <= 0 ? 0 : Math.round(400 * score / 90);
@@ -51,6 +54,17 @@ export const FR_TO_CRY_ID = {
   "Écrémeuh":241,"Leuphorie":242,"Raikou":243,"Entei":244,"Suicune":245,"Embrylex":246,
   "Ymphect":247,"Tyranocif":248,"Lugia":249,"Ho-Oh":250,"Celebi":251,
 };
+
+// Complète le mapping avec les noms FR → id national des Gen 3 & 4 (cris disponibles
+// pour toutes les générations). Chargé depuis le fichier de données du front.
+try {
+  const __dir = dirname(fileURLToPath(import.meta.url));
+  const gen34 = JSON.parse(readFileSync(join(__dir, "../../html/data/gen3_4.json"), "utf8"));
+  for (const p of gen34) {
+    const name = p.name || p.nom;
+    if (name && p.id && !FR_TO_CRY_ID[name]) FR_TO_CRY_ID[name] = p.id;
+  }
+} catch { /* fichier indisponible : on garde le mapping gen 1-2 */ }
 
 const router = Router();
 const COOLDOWN_MS = 30 * 60 * 1000;
@@ -157,7 +171,16 @@ router.post("/game/reset", async (req, res) => {
       const ts        = await get(`SELECT stat_tresorier FROM trainer_stats WHERE user_id = ?`, [userId]);
       const tresorier = ts?.stat_tresorier || 0;
       const lucky     = await get(`SELECT active FROM user_passives WHERE user_id = ? AND item = 'luckycoin'`, [userId]);
-      let gain = base + tresorier * 3;
+      // Passif Arène Élite : +10 ₽/jeu par arène de gen 3/4 vaincue
+      const uname     = await get(`SELECT username FROM users WHERE id = ?`, [userId]);
+      const eliteRow  = uname ? await get(
+        `SELECT COUNT(*) AS n FROM user_arenes WHERE username = ? AND defeated = 1 AND arene IN
+         ('roxanne','bastien','voltere','adriane','norman','alizee','levytatia','marc',
+          'pierrick','flo','melina','lovis','kimera','charles','gladys','tanguy')`,
+        [uname.username]
+      ) : null;
+      const eliteBonus = (eliteRow?.n || 0) * 10;
+      let gain = base + tresorier * 3 + eliteBonus;
       if (lucky?.active === 1) gain = Math.round(gain * 1.25);
       if (gain > 0) {
         await run(`UPDATE inventory SET pokedollars = COALESCE(pokedollars,0) + ? WHERE user_id = ?`, [gain, userId]);
@@ -193,7 +216,8 @@ router.get("/cry/:userId/:gameType", async (req, res) => {
     const state = JSON.parse(row.state || "{}");
     const pokemonName = state.secret;
     if (!pokemonName) return res.status(404).json({ error: "Pokémon non trouvé" });
-    const id = FR_TO_CRY_ID[pokemonName];
+    // Priorité à l'id sauvegardé (toutes générations) ; fallback sur le mapping gen 1-2.
+    const id = state.secretId || FR_TO_CRY_ID[pokemonName];
     if (!id) return res.status(404).json({ error: "Cri non disponible" });
     const url = `https://raw.githubusercontent.com/PokeAPI/cries/main/cries/pokemon/latest/${id}.ogg`;
     https.get(url, (upstream) => {

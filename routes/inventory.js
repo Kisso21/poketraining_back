@@ -363,8 +363,14 @@ router.post("/useitem/:username", async (req, res) => {
 
       // Apply all changes
       await run(`UPDATE inventory SET lootbox = lootbox - ? WHERE user_id = ?`, [count, user.id]);
-      // Persiste la durabilité (et la date du jour pour la recharge quotidienne)
-      await run(`UPDATE user_passives SET durability = ?, durability_date = ? WHERE user_id = ? AND item = 'corneabondance'`, [corneDura, today, user.id]);
+      // Persiste la durabilité (et la date du jour pour la recharge quotidienne).
+      // Durabilité épuisée → on désactive le passif pour libérer le slot (sinon il
+      // resterait actif sans effet et empêcherait d'en activer un autre).
+      const depleted = corneDura <= 0;
+      await run(
+        `UPDATE user_passives SET durability = ?, durability_date = ?${depleted ? ", active = 0" : ""} WHERE user_id = ? AND item = 'corneabondance'`,
+        [corneDura, today, user.id]
+      );
       for (const p of prizes) {
         if (p.item === "pokemon") {
           await run(`INSERT OR IGNORE INTO captures (user_id, pokemon_name, is_shiny) VALUES (?,?,?)`, [user.id, p.pokemon.name, p.pokemon.isShiny ? 1 : 0]);

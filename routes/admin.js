@@ -468,14 +468,25 @@ router.post("/reserve/remove", async (req, res) => {
 // GET /api/admin/stats
 router.get("/stats", async (req, res) => {
   try {
-    const [users, captures, shinys, economy, topRich, recentUsers] = await Promise.all([
+    const [users, captures, shinys, economy, topRich, recentUsers, topPokemon] = await Promise.all([
       get("SELECT COUNT(*) as count FROM users"),
       get("SELECT COUNT(*) as count FROM captures WHERE is_shiny = 0"),
       get("SELECT COUNT(*) as count FROM captures WHERE is_shiny = 1"),
       get("SELECT COALESCE(SUM(pokedollars),0) as total, COALESCE(MAX(pokedollars),0) as max FROM inventory"),
       all("SELECT u.username, u.role, COALESCE(i.pokedollars,0) as pokedollars FROM users u LEFT JOIN inventory i ON i.user_id = u.id ORDER BY i.pokedollars DESC LIMIT 5"),
       all("SELECT username FROM users ORDER BY id DESC LIMIT 5"),
+      // Top 5 joueurs par total de Pokémon capturés (normaux + shiny)
+      all("SELECT u.username, u.role, COUNT(c.id) as total FROM users u LEFT JOIN captures c ON c.user_id = u.id GROUP BY u.id ORDER BY total DESC LIMIT 5"),
     ]);
+
+    // Activité par période (fenêtres glissantes) : inscrits + joueurs ayant joué
+    const signupsSince = (since) => get(`SELECT COUNT(*) as n FROM users WHERE created_at >= datetime('now', ?)`, [since]);
+    const activeSince  = (since) => get(`SELECT COUNT(DISTINCT user_id) as n FROM game_states WHERE updated_at >= datetime('now', ?)`, [since]);
+    const [sd, sw, sm, ad, aw, am] = await Promise.all([
+      signupsSince("-1 day"), signupsSince("-7 days"), signupsSince("-30 days"),
+      activeSince("-1 day"),  activeSince("-7 days"),  activeSince("-30 days"),
+    ]);
+
     res.json({
       users:            users.count,
       captures:         captures.count,
@@ -484,6 +495,11 @@ router.get("/stats", async (req, res) => {
       maxPokedollars:   economy.max,
       topRich,
       recentUsers,
+      topPokemon,
+      activity: {
+        signups: { day: sd.n, week: sw.n, month: sm.n },
+        active:  { day: ad.n, week: aw.n, month: am.n },
+      },
     });
   } catch { res.status(500).json({ error: "Erreur serveur" }); }
 });

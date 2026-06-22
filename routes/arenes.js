@@ -20,7 +20,36 @@ const ARENE_CONFIG = [
   { id: "jasmine",  label: "Jasmine",   badge: "Badge Minéral",  type: "Acier",    region: "Johto", reward: { pokedollars: 8000,  hyperball: 1 } },
   { id: "fredo",    label: "Fredo",     badge: "Badge Glacier",  type: "Glace",    region: "Johto", reward: { pokedollars: 8500,  superbonbon: 1 } },
   { id: "sandra",   label: "Sandra",    badge: "Badge Lever",    type: "Dragon",   region: "Johto", reward: { pokedollars: 10000, lootbox: 1 } },
+  // ── Arènes Élite (gen 3 / 4) — débloquées après Sandra ET le succès unlock-gen3-4 ──
+  { id: "roxanne",  label: "Roxanne",      badge: "Badge Caillou",   type: "Roche",    type2: "Eau",      region: "Hoenn",  tier: "elite", reward: { pokedollars: 11000, superball: 3 } },
+  { id: "bastien",  label: "Bastien",      badge: "Badge Genou",     type: "Combat",   type2: "Psy",      region: "Hoenn",  tier: "elite", reward: { pokedollars: 12000, hyperball: 2 } },
+  { id: "voltere",  label: "Voltère",      badge: "Badge Dynamo",    type: "Électrik", type2: "Sol",      region: "Hoenn",  tier: "elite", reward: { pokedollars: 13000, superbonbon: 1 } },
+  { id: "adriane",  label: "Adriane",      badge: "Badge Chaleur",   type: "Feu",      type2: "Eau",      region: "Hoenn",  tier: "elite", reward: { pokedollars: 14000, hyperball: 2 } },
+  { id: "norman",   label: "Norman",       badge: "Badge Équilibre", type: "Normal",   type2: "Combat",   region: "Hoenn",  tier: "elite", reward: { pokedollars: 15000, resetball: 1 } },
+  { id: "alizee",   label: "Alizée",       badge: "Badge Plume",     type: "Vol",      type2: "Électrik", region: "Hoenn",  tier: "elite", reward: { pokedollars: 16000, superbonbon: 1 } },
+  { id: "levytatia",label: "Lévy & Tatia", badge: "Badge Esprit",    type: "Psy",      type2: "Ténèbres", region: "Hoenn",  tier: "elite", reward: { pokedollars: 17000, hyperball: 2 } },
+  { id: "marc",     label: "Marc",         badge: "Badge Pluie",     type: "Eau",      type2: "Plante",   region: "Hoenn",  tier: "elite", reward: { pokedollars: 18000, lootbox: 1 } },
+  { id: "pierrick", label: "Pierrick",     badge: "Badge Charbon",   type: "Roche",    type2: "Plante",   region: "Sinnoh", tier: "elite", reward: { pokedollars: 19000, superball: 3 } },
+  { id: "flo",      label: "Flo",          badge: "Badge Forêt",     type: "Plante",   type2: "Feu",      region: "Sinnoh", tier: "elite", reward: { pokedollars: 20000, hyperball: 2 } },
+  { id: "melina",   label: "Mélina",       badge: "Badge Cobalt",    type: "Combat",   type2: "Vol",      region: "Sinnoh", tier: "elite", reward: { pokedollars: 21000, superbonbon: 1 } },
+  { id: "lovis",    label: "Lovis",        badge: "Badge Palustre",  type: "Eau",      type2: "Électrik", region: "Sinnoh", tier: "elite", reward: { pokedollars: 22000, hyperball: 2 } },
+  { id: "kimera",   label: "Kiméra",       badge: "Badge Fantôme",   type: "Spectre",  type2: "Ténèbres", region: "Sinnoh", tier: "elite", reward: { pokedollars: 23000, resetball: 1 } },
+  { id: "charles",  label: "Charles",      badge: "Badge Mine",      type: "Acier",    type2: "Feu",      region: "Sinnoh", tier: "elite", reward: { pokedollars: 24000, superbonbon: 2 } },
+  { id: "gladys",   label: "Gladys",       badge: "Badge Glace",     type: "Glace",    type2: "Acier",    region: "Sinnoh", tier: "elite", reward: { pokedollars: 25000, hyperball: 3 } },
+  { id: "tanguy",   label: "Tanguy",       badge: "Badge Phare",     type: "Électrik", type2: "Sol",      region: "Sinnoh", tier: "elite", reward: { pokedollars: 30000, lootbox: 2 } },
 ];
+
+// Première arène Élite : déblocage conditionné au succès gen 3/4
+const FIRST_ELITE_ID = "roxanne";
+async function gen34Claimed(username) {
+  const u = await get(`SELECT id FROM users WHERE username = ?`, [username]);
+  if (!u) return false;
+  const row = await get(
+    `SELECT claimed FROM achievements WHERE user_id = ? AND achievement_id = 'unlock-gen3-4'`,
+    [u.id]
+  );
+  return Number(row?.claimed) === 1;
+}
 
 const ARENE_ORDER = ARENE_CONFIG.map(a => a.id);
 const ARENE_MAP   = Object.fromEntries(ARENE_CONFIG.map(a => [a.id, a]));
@@ -42,16 +71,27 @@ router.get("/:username", async (req, res) => {
     ) : [];
     const badgeSet = new Set(badgeRows.map(b => b.badge));
 
+    // Déblocage Élite : Sandra vaincue + succès gen 3/4 récupéré
+    const sandraRow = rowMap["sandra"];
+    const sandraDefeated = (sandraRow ? !!sandraRow.defeated : false)
+      || badgeSet.has(ARENE_MAP["sandra"].badge);
+    const eliteUnlocked = sandraDefeated && await gen34Claimed(req.user.username);
+
     const result = ARENE_CONFIG.map((cfg, i) => {
       const row = rowMap[cfg.id];
       // defeated est true si soit l'arène a été vaincue, soit le badge existe en base
       const defeated = (row ? !!row.defeated : false) || (cfg.badge ? badgeSet.has(cfg.badge) : false);
+      let unlocked = row ? !!row.unlocked : i === 0;
+      // La 1re arène Élite n'est jouable qu'une fois la condition gen 3/4 remplie ;
+      // les arènes Élite sont masquées tant que la condition n'est pas remplie.
+      if (cfg.id === FIRST_ELITE_ID) unlocked = eliteUnlocked;
       return {
         ...cfg,
-        unlocked:   row ? !!row.unlocked   : i === 0,
+        unlocked,
         defeated,
         inProgress: row ? !!row.in_progress : false,
         lastTry:    row?.last_try ? row.last_try.replace(' ', 'T') + 'Z' : null,
+        eliteLocked: cfg.tier === "elite" && !eliteUnlocked,
       };
     });
     res.json(result);
@@ -74,8 +114,16 @@ router.post("/victory/:username", async (req, res) => {
       [username, arene]
     );
     const isFirstArena = arene === ARENE_ORDER[0];
-    if (!row && !isFirstArena) return res.status(403).json({ error: "Arène verrouillée" });
-    if (row && !row.unlocked && !isFirstArena) return res.status(403).json({ error: "Arène verrouillée" });
+    // La 1re arène Élite est accessible dès que la condition gen 3/4 est remplie,
+    // même sans ligne user_arenes (le déblocage est calculé dynamiquement).
+    let eliteEntryOk = false;
+    if (arene === FIRST_ELITE_ID) {
+      const sandra = await get(`SELECT defeated FROM user_arenes WHERE username=? AND arene='sandra'`, [username]);
+      eliteEntryOk = !!sandra?.defeated && await gen34Claimed(username);
+    }
+    const bypassLock = isFirstArena || eliteEntryOk;
+    if (!row && !bypassLock) return res.status(403).json({ error: "Arène verrouillée" });
+    if (row && !row.unlocked && !bypassLock) return res.status(403).json({ error: "Arène verrouillée" });
     if (row?.defeated) return res.status(400).json({ error: "Déjà vaincue" });
 
     // Créer la ligne si elle n'existe pas (première arène pour nouveaux joueurs)
