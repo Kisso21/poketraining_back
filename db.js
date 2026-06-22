@@ -418,6 +418,19 @@ export async function initDB() {
     FOREIGN KEY (user_id)  REFERENCES users(id)
   )`);
 
+  // Enchères (événement admin) — une seule ligne par enchère = la meilleure
+  // offre courante. Les Pokédollars du meneur sont retenus (escrow) ; ils sont
+  // remboursés s'il est surenchéri, ou définitivement dépensés s'il remporte le lot.
+  await dbRun(`CREATE TABLE IF NOT EXISTS auction_bids (
+    event_id  INTEGER PRIMARY KEY,
+    user_id   INTEGER NOT NULL,
+    username  TEXT NOT NULL,
+    amount    INTEGER NOT NULL,
+    bid_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (event_id) REFERENCES events(id),
+    FOREIGN KEY (user_id)  REFERENCES users(id)
+  )`);
+
   await dbRun(`CREATE INDEX IF NOT EXISTS idx_captures_user      ON captures(user_id)`);
   await dbRun(`CREATE INDEX IF NOT EXISTS idx_reserve_user       ON pokemon_reserve(user_id)`);
   await dbRun(`CREATE INDEX IF NOT EXISTS idx_game_states_user   ON game_states(user_id, game_type)`);

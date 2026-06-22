@@ -1,7 +1,8 @@
 import { Router }        from "express";
 import { run, get, all } from "../db.js";
 import { verifyToken, verifyAdmin, optionalToken } from "../middleware/auth.js";
-import { getIO } from "../socket.js";
+import { getIO, emitToUser } from "../socket.js";
+import { checkAchievements } from "./achievements.js";
 
 const router = Router();
 
@@ -86,6 +87,97 @@ function scheduleTirageDraw(eventId, delayMs) {
   tirageTimers.set(eventId, t);
 }
 
+// ── Enchères : fenêtre de mises, le plus offrant remporte le lot ─────
+const auctionTimers = new Map(); // eventId -> timeout (clôture des enchères)
+
+// Mise minimale suivante : meilleure offre + incrément, ou prix de départ
+function nextMinBid(rd, current) {
+  const startBid = Math.max(parseInt(rd._startBid) || 0, 1);
+  const minInc   = Math.max(parseInt(rd._minInc)   || 1, 1);
+  return current ? current.amount + minInc : startBid;
+}
+
+// Clôture l'enchère : le meneur conserve sa mise (déjà retenue) et reçoit le lot.
+async function settleAuction(eventId) {
+  const event = await get(
+    `SELECT * FROM events WHERE id=? AND type='enchere' AND is_active=1 AND claimed_by IS NULL`,
+    [eventId]
+  );
+  if (!event) return null;
+
+  const rd       = JSON.parse(event.reward_data || "{}");
+  const publicRd = Object.fromEntries(Object.entries(rd).filter(([k]) => !k.startsWith("_")));
+  const top      = await get(`SELECT * FROM auction_bids WHERE event_id=?`, [eventId]);
+
+  // Aucune mise → on clôture sans gagnant
+  if (!top) {
+    await run(`UPDATE events SET is_active=0 WHERE id=?`, [eventId]);
+    getIO()?.emit("event:end", { reason: "expired" });
+    return { winner: null };
+  }
+
+  await giveReward(top.user_id, publicRd);
+
+  // Lot Pokémon (optionnel) → Pokédex si le gagnant ne l'a pas encore,
+  // sinon (doublon) dans sa réserve. Même logique que la capture en jeu.
+  const pkmn  = publicRd.pokemon;
+  if (pkmn?.name) {
+    const shiny = pkmn.shiny ? 1 : 0;
+    const label = `${pkmn.shiny ? "✨ " : ""}${pkmn.name}`;
+    const ins = await run(
+      `INSERT OR IGNORE INTO captures (user_id, pokemon_name, is_shiny) VALUES (?,?,?)`,
+      [top.user_id, pkmn.name, shiny]
+    );
+    if (ins.changes === 0) {
+      // Déjà dans le Pokédex → le double part en réserve (revendable)
+      await run(
+        `INSERT INTO pokemon_reserve (user_id, pokemon_name, is_shiny) VALUES (?,?,?)`,
+        [top.user_id, pkmn.name, shiny]
+      );
+      getIO()?.emit("sync:pokedex", { userId: top.user_id, pokemonName: pkmn.name, isShiny: shiny, addedToReserve: true, newAchievements: [] });
+      emitToUser(top.user_id, "notification", {
+        message: `Tu remportes ${label} aux enchères ! Tu l'avais déjà : le double t'attend dans ta réserve.`,
+      });
+    } else {
+      // Nouveau → ajouté au Pokédex
+      const newAchievements = await checkAchievements(top.user_id).catch(() => []);
+      getIO()?.emit("sync:pokedex", { userId: top.user_id, pokemonName: pkmn.name, isShiny: shiny, addedToReserve: false, newAchievements });
+      emitToUser(top.user_id, "notification", {
+        message: `Tu remportes ${label} aux enchères ! Nouveau : il rejoint ton Pokédex.`,
+      });
+    }
+  }
+
+  await run(
+    `UPDATE events SET claimed_by=?, winner_username=?, is_active=0, claimed_at=datetime('now') WHERE id=?`,
+    [top.user_id, top.username, eventId]
+  );
+  await run(`DELETE FROM auction_bids WHERE event_id=?`, [eventId]);
+
+  getIO()?.emit("event:claimed", { eventId, winner: top.username, rewardData: publicRd });
+  getIO()?.emit("event:end",     { reason: "claimed", winner: top.username });
+  emitToUser(top.user_id, "sync:inventory", {}); // le lot vient d'arriver
+  return { winner: top.username };
+}
+
+function scheduleAuctionSettle(eventId, delayMs) {
+  if (auctionTimers.has(eventId)) clearTimeout(auctionTimers.get(eventId));
+  const t = setTimeout(() => {
+    auctionTimers.delete(eventId);
+    settleAuction(eventId).catch(() => {});
+  }, Math.max(0, delayMs));
+  auctionTimers.set(eventId, t);
+}
+
+// Rembourse le meneur courant (mise retenue) — utilisé à l'annulation
+async function refundAuctionLeader(eventId) {
+  const top = await get(`SELECT * FROM auction_bids WHERE event_id=?`, [eventId]);
+  if (!top) return;
+  await run(`UPDATE inventory SET pokedollars = pokedollars + ? WHERE user_id = ?`, [top.amount, top.user_id]);
+  await run(`DELETE FROM auction_bids WHERE event_id=?`, [eventId]);
+  emitToUser(top.user_id, "sync:inventory", {});
+}
+
 // ── GET /api/events/active ──────────────────────────────────────────
 // Note : datetime(ends_at) normalise le format ISO ("...T...Z") stocké par
 // new Date().toISOString() — une comparaison texte brute avec datetime('now')
@@ -114,6 +206,16 @@ router.get("/active", optionalToken, async (req, res) => {
         ? !!(await get(`SELECT 1 FROM tirage_entries WHERE event_id=? AND user_id=?`, [payload.id, req.user.id]))
         : false;
     }
+    // Enchère en cours : meilleure offre + mise minimale suivante
+    if (payload?.type === "enchere") {
+      const rd  = JSON.parse(event.reward_data || "{}");
+      const top = await get(`SELECT * FROM auction_bids WHERE event_id=?`, [payload.id]);
+      payload.auctionStart  = Math.max(parseInt(rd._startBid) || 0, 1);
+      payload.auctionBid    = top?.amount ?? 0;
+      payload.auctionBidder = top?.username ?? null;
+      payload.auctionMin    = nextMinBid(rd, top);
+      payload.auctionIsMine = req.user && top ? top.user_id === req.user.id : false;
+    }
     res.json(payload);
   } catch { res.status(500).json({ error: "Erreur serveur" }); }
 });
@@ -134,7 +236,7 @@ router.post("/create", verifyAdmin, async (req, res) => {
   const { type, title, description, rewardData = {}, durationSeconds } = req.body;
   if (!type || !title) return res.status(400).json({ error: "type et title requis" });
 
-  const VALID_TYPES = ["premier_clic", "pluie", "annonce", "double_xp", "devinette", "tirage", "pokemon_rare", "sondage"];
+  const VALID_TYPES = ["premier_clic", "pluie", "annonce", "double_xp", "devinette", "tirage", "pokemon_rare", "sondage", "enchere"];
   if (!VALID_TYPES.includes(type)) return res.status(400).json({ error: "Type invalide" });
 
   try {
@@ -177,6 +279,18 @@ router.post("/create", verifyAdmin, async (req, res) => {
       return res.json({ success: true, event: payload });
     }
 
+    // Enchères → fenêtre de mises, le plus offrant remporte le lot à la clôture
+    if (type === "enchere") {
+      payload.auctionStart  = Math.max(parseInt(rewardData._startBid) || 0, 1);
+      payload.auctionBid    = 0;
+      payload.auctionBidder = null;
+      payload.auctionMin    = payload.auctionStart;
+      getIO()?.emit("event:start", payload);
+      const delay = endsAt ? new Date(endsAt).getTime() - Date.now() : 120000;
+      scheduleAuctionSettle(result.lastID, delay);
+      return res.json({ success: true, event: payload });
+    }
+
     getIO()?.emit("event:start", payload);
 
     // Auto-end quand ends_at est atteint
@@ -200,6 +314,12 @@ router.post("/create", verifyAdmin, async (req, res) => {
 // ── POST /api/events/cancel (admin) ────────────────────────────────
 router.post("/cancel", verifyAdmin, async (req, res) => {
   try {
+    // Enchère en cours : rembourser la mise retenue du meneur avant clôture
+    const auction = await get(`SELECT id FROM events WHERE is_active=1 AND type='enchere'`);
+    if (auction) {
+      if (auctionTimers.has(auction.id)) { clearTimeout(auctionTimers.get(auction.id)); auctionTimers.delete(auction.id); }
+      await refundAuctionLeader(auction.id);
+    }
     await run(`UPDATE events SET is_active = 0 WHERE is_active = 1`);
     getIO()?.emit("event:end", { reason: "cancelled" });
     res.json({ success: true });
@@ -241,6 +361,65 @@ router.post("/tirage/join", verifyToken, async (req, res) => {
     const count = await get(`SELECT COUNT(*) AS cnt FROM tirage_entries WHERE event_id=?`, [eventId]);
     getIO()?.emit("tirage:entry", { eventId, count: count?.cnt ?? 0 });
     res.json({ success: true, count: count?.cnt ?? 0 });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// ── POST /api/events/bid (enchère) ─────────────────────────────────
+router.post("/bid", verifyToken, async (req, res) => {
+  const { eventId, amount } = req.body;
+  const userId   = req.user.id;
+  const username = req.user.username;
+  const bid = parseInt(amount);
+  if (!bid || bid <= 0) return res.status(400).json({ error: "Mise invalide" });
+  try {
+    const event = await get(`SELECT * FROM events WHERE id=? AND type='enchere' AND is_active=1 AND claimed_by IS NULL`, [eventId]);
+    if (!event) return res.status(409).json({ error: "Enchère terminée ou introuvable" });
+    if (event.ends_at && new Date(event.ends_at).getTime() <= Date.now())
+      return res.status(400).json({ error: "Les enchères sont closes" });
+
+    const rd      = JSON.parse(event.reward_data || "{}");
+    const current = await get(`SELECT * FROM auction_bids WHERE event_id=?`, [eventId]);
+    const minBid  = nextMinBid(rd, current);
+    if (bid < minBid) return res.status(400).json({ error: `Mise minimale : ${minBid.toLocaleString("fr-FR")} ₽` });
+
+    // Retenue de la mise (escrow) : on débite, en s'assurant du solde (anti-race)
+    const deb = await run(
+      `UPDATE inventory SET pokedollars = pokedollars - ? WHERE user_id = ? AND pokedollars >= ?`,
+      [bid, userId, bid]
+    );
+    if (deb.changes === 0) return res.status(400).json({ error: "Pokédollars insuffisants" });
+
+    // Remboursement du meneur précédent (sa mise n'est plus retenue)
+    if (current) {
+      await run(`UPDATE inventory SET pokedollars = pokedollars + ? WHERE user_id = ?`, [current.amount, current.user_id]);
+      emitToUser(current.user_id, "sync:inventory", {});
+      emitToUser(current.user_id, "notification", { message: `Tu as été surenchéri sur "${event.title}" — mise remboursée.` });
+    }
+
+    await run(
+      `INSERT OR REPLACE INTO auction_bids (event_id, user_id, username, amount) VALUES (?,?,?,?)`,
+      [eventId, userId, username, bid]
+    );
+
+    const newMin = nextMinBid(rd, { amount: bid });
+    getIO()?.emit("auction:bid", { eventId, amount: bid, bidder: username, min: newMin });
+    emitToUser(userId, "sync:inventory", {});
+    res.json({ success: true, amount: bid, min: newMin });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// ── GET /api/events/prize-owned/:eventId (joueur : a-t-il déjà le lot ?) ──
+router.get("/prize-owned/:eventId", verifyToken, async (req, res) => {
+  try {
+    const event = await get(`SELECT reward_data FROM events WHERE id=? AND type='enchere'`, [req.params.eventId]);
+    if (!event) return res.json({ hasPrize: false, owned: false });
+    const pkmn = JSON.parse(event.reward_data || "{}").pokemon;
+    if (!pkmn?.name) return res.json({ hasPrize: false, owned: false });
+    const row = await get(
+      `SELECT 1 FROM captures WHERE user_id=? AND pokemon_name=? AND is_shiny=?`,
+      [req.user.id, pkmn.name, pkmn.shiny ? 1 : 0]
+    );
+    res.json({ hasPrize: true, owned: !!row, shiny: pkmn.shiny ? 1 : 0 });
   } catch { res.status(500).json({ error: "Erreur serveur" }); }
 });
 
@@ -357,6 +536,13 @@ export async function resumeEventTimers() {
       if (ev.type === "tirage") {
         scheduleTirageDraw(ev.id, delay);
         console.log(`⏰ Tirage ${ev.id} repris (roue dans ${Math.max(0, Math.round(delay / 1000))}s)`);
+        continue;
+      }
+
+      // Enchère : la fin de la fenêtre déclenche la clôture (attribution du lot)
+      if (ev.type === "enchere") {
+        scheduleAuctionSettle(ev.id, delay);
+        console.log(`⏰ Enchère ${ev.id} reprise (clôture dans ${Math.max(0, Math.round(delay / 1000))}s)`);
         continue;
       }
 
