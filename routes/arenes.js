@@ -188,7 +188,7 @@ router.post("/victory/:username", async (req, res) => {
 router.post("/progress/:username", async (req, res) => {
   const username = req.user.username;
   const { arene, progress } = req.body;
-  if (!arene || !ARENE_MAP[arene]) return res.status(400).json({ error: "Paramètres manquants" });
+  if (!arene || (!ARENE_MAP[arene] && arene !== "createur")) return res.status(400).json({ error: "Paramètres manquants" });
   try {
     await run(
       `INSERT OR IGNORE INTO user_arenes (username, arene, unlocked) VALUES (?,?,0)`,
@@ -236,7 +236,7 @@ router.post("/reset/:username/:arene", async (req, res) => {
 router.post("/defeat/:username", async (req, res) => {
   const username = req.user.username;
   const { arene } = req.body;
-  if (!arene || !ARENE_MAP[arene]) return res.status(400).json({ error: "Arène invalide" });
+  if (!arene || (!ARENE_MAP[arene] && arene !== "createur")) return res.status(400).json({ error: "Arène invalide" });
   try {
     await run(`INSERT OR IGNORE INTO user_arenes (username, arene, unlocked) VALUES (?,?,0)`, [username, arene]);
     await run(
@@ -321,6 +321,77 @@ router.post("/admin/set", async (req, res) => {
     }
 
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// BOSS FINAL — « Le Créateur »
+// Débloqué par le succès `final-boss` (posséder les 29 badges). Combat unique,
+// jackpot 50 000₽ + 20 lootbox à la première victoire. Stocké hors ARENE_CONFIG
+// pour ne pas polluer l'ordre des arènes ni le comptage des badges.
+// ─────────────────────────────────────────────────────────────────────────
+const BOSS_ID = "createur";
+const BOSS_REWARD = { pokedollars: 50000, lootbox: 20 };
+
+async function bossUnlocked(userId) {
+  const row = await get(
+    `SELECT unlocked FROM achievements WHERE user_id = ? AND achievement_id = 'final-boss'`,
+    [userId]
+  );
+  return Number(row?.unlocked) === 1;
+}
+
+// GET /boss/:username — statut du boss final pour le joueur
+router.get("/boss/:username", async (req, res) => {
+  try {
+    const username = req.user.username;
+    const uRow = await get(`SELECT id FROM users WHERE username = ?`, [username]);
+    if (!uRow) return res.json({ unlocked: false, defeated: false });
+    const unlocked = await bossUnlocked(uRow.id);
+    const row = await get(
+      `SELECT defeated, in_progress, last_try FROM user_arenes WHERE username = ? AND arene = ?`,
+      [username, BOSS_ID]
+    );
+    res.json({
+      unlocked,
+      defeated: row ? !!row.defeated : false,
+      inProgress: row ? !!row.in_progress : false,
+      lastTry: row?.last_try ? row.last_try.replace(' ', 'T') + 'Z' : null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /boss-victory/:username — victoire contre le boss final (jackpot unique)
+router.post("/boss-victory/:username", async (req, res) => {
+  try {
+    const username = req.user.username;
+    const uRow = await get(`SELECT id FROM users WHERE username = ?`, [username]);
+    if (!uRow) return res.status(404).json({ error: "Utilisateur introuvable" });
+    if (!await bossUnlocked(uRow.id)) return res.status(403).json({ error: "Boss verrouillé" });
+
+    const row = await get(
+      `SELECT defeated FROM user_arenes WHERE username = ? AND arene = ?`,
+      [username, BOSS_ID]
+    );
+    const firstWin = !row?.defeated;
+
+    await run(`INSERT OR IGNORE INTO user_arenes (username, arene, unlocked) VALUES (?,?,1)`, [username, BOSS_ID]);
+    // Victoire : on efface le cooldown (last_try) et la progression.
+    await run(`UPDATE user_arenes SET unlocked=1, defeated=1, in_progress=0, progress_json='{}', last_try=NULL WHERE username=? AND arene=?`, [username, BOSS_ID]);
+
+    // Jackpot accordé uniquement à la première victoire
+    if (firstWin) {
+      const { pokedollars, ...items } = BOSS_REWARD;
+      const itemKeys = Object.keys(items);
+      const setCols = ["pokedollars = pokedollars + ?", ...itemKeys.map(k => `${k} = COALESCE(${k},0) + ?`)].join(", ");
+      await run(`UPDATE inventory SET ${setCols} WHERE user_id = ?`, [pokedollars, ...Object.values(items), uRow.id]);
+    }
+
+    res.json({ success: true, firstWin, reward: firstWin ? BOSS_REWARD : null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

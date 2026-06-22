@@ -173,6 +173,8 @@ const REWARDS = {
   "shiny-dex-251":               75000,
   // ── Déverrouillage Gen 3 & 4 ─────────────────────────────────────────────
   "unlock-gen3-4": 5000,
+  // ── Boss final (tous les badges) ─────────────────────────────────────────
+  "final-boss": 25000,
   // ── Succès Gen 3 ──
   "g3-arcko-line": 400,
   "g3-poussifeu-line": 400,
@@ -526,6 +528,8 @@ const ITEM_REWARDS = {
   "shiny-dex-251":                 { masterball: 3, lootbox: 5 },
   // ── Déverrouillage Gen 3 & 4 ─────────────────────────────────────────────
   "unlock-gen3-4": { masterball: 1, lootbox: 3 },
+  // ── Boss final (tous les badges) ─────────────────────────────────────────
+  "final-boss": { lootbox: 10 },
   // ── Objets Gen 3 ──
   "g3-arcko-line": { superball: 1, superbonbon: 1 },
   "g3-poussifeu-line": { superball: 1, superbonbon: 1 },
@@ -1392,6 +1396,9 @@ const POKEDEX_REQS = {
 };
 
 // Vérifie et déverrouille tous les succès mérités — retourne les IDs nouvellement débloqués
+// Nombre total de badges d'arène (15 classiques Kanto/Johto + 16 Élite Hoenn/Sinnoh).
+const TOTAL_ARENA_BADGES = 31;
+
 export async function checkAchievements(userId) {
   const [existing, ts] = await Promise.all([
     all(`SELECT achievement_id FROM achievements WHERE user_id = ? AND unlocked = 1`, [userId]),
@@ -1508,6 +1515,15 @@ export async function checkAchievements(userId) {
       );
       if ((badgeRow?.cnt || 0) >= 2) toUnlock.push("unlock-versus");
     }
+  }
+
+  // Boss final : posséder TOUS les badges d'arène (15 classiques + 16 Élite = 31)
+  if (!unlockedSet.has("final-boss")) {
+    const badgeRow = await get(
+      `SELECT COUNT(*) as cnt FROM user_badges WHERE user_id = ? AND unlocked = 1`,
+      [userId]
+    );
+    if ((badgeRow?.cnt || 0) >= TOTAL_ARENA_BADGES) toUnlock.push("final-boss");
   }
 
   // Dédupliquer (casino/safari peuvent être dans les deux branches)
