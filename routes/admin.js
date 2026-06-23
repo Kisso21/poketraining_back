@@ -695,7 +695,7 @@ router.post("/game/resetglobal", async (req, res) => {
 router.get("/users", async (req, res) => {
   try {
     const users = await all(
-      `SELECT u.id, u.username, u.role, u.last_game_type, u.last_game_at,
+      `SELECT u.id, u.username, u.role, u.email, u.email_verified, u.last_game_type, u.last_game_at,
               COALESCE(i.pokedollars, 0) as pokedollars,
               COALESCE(SUM(CASE WHEN c.is_shiny = 0 THEN 1 ELSE 0 END), 0) as normal_count,
               COALESCE(SUM(CASE WHEN c.is_shiny = 1 THEN 1 ELSE 0 END), 0) as shiny_count
