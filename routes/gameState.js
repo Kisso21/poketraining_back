@@ -9,6 +9,12 @@ import { dirname, join } from "path";
 // Récompense identique au client (GameBase.calcReward) — max 500. Le serveur fait foi.
 const calcReward = (score) => score >= 100 ? 500 : score <= 0 ? 0 : Math.round(400 * score / 90);
 
+// Jeux « à secret » : la victoire est VÉRIFIÉE par le serveur (comparaison de la
+// proposition envoyée par le client avec le secret déjà stocké), au lieu de faire
+// confiance au flag `won` du client. Couvre les 8 jeux où correct = guess === secret.
+const SECRET_GAMES = new Set(["ombre", "cri", "devinette", "pixel", "palette", "carte", "atq", "text"]);
+const normalizeGuess = (v) => String(v ?? "").trim().toLowerCase();
+
 export const FR_TO_CRY_ID = {
   "Bulbizarre":1,"Herbizarre":2,"Florizarre":3,"Salamèche":4,"Reptincel":5,"Dracaufeu":6,
   "Carapuce":7,"Carabaffe":8,"Tortank":9,"Chenipan":10,"Chrysacier":11,"Papilusion":12,
@@ -136,17 +142,30 @@ router.post("/game/reset", async (req, res) => {
   if (!VALID_GAME_TYPES.has(gameType)) return res.status(400).json({ error: "Type de jeu invalide" });
 
   const userId = req.user.id;
-  const won    = req.body.won === true;
   let score    = Number(req.body.score);
   if (!Number.isFinite(score)) score = 0;
   score = Math.max(0, Math.min(100, Math.round(score)));
 
   try {
     const existing = await get(
-      `SELECT next_available_at, reward_claimed FROM game_states WHERE user_id = ? AND game_type = ?`,
+      `SELECT next_available_at, reward_claimed, state FROM game_states WHERE user_id = ? AND game_type = ?`,
       [userId, gameType]
     );
     const alreadyActive = existing?.next_available_at && new Date(existing.next_available_at) > new Date();
+
+    // Détermination de la victoire. Pour les jeux à secret, le SERVEUR fait foi :
+    // il compare la proposition (req.body.guess) au secret déjà enregistré dans le state.
+    // Le flag `won` du client n'est plus pris en compte pour ces jeux.
+    let won = req.body.won === true;
+    if (SECRET_GAMES.has(gameType)) {
+      let storedSecret = null;
+      try { storedSecret = JSON.parse(existing?.state || "{}").secret; } catch { /* state illisible */ }
+      if (storedSecret) {
+        won = normalizeGuess(req.body.guess) !== "" &&
+              normalizeGuess(req.body.guess) === normalizeGuess(storedSecret);
+      }
+      // Si aucun secret n'est stocké (cas limite : state perdu), on retombe sur le `won` client.
+    }
 
     // Une nouvelle fenêtre de cooldown rouvre le droit à UNE récompense (reward_claimed=0).
     // Tant que la fenêtre est active, le gain ne peut être encaissé qu'une seule fois.

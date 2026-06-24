@@ -137,7 +137,7 @@ router.post("/login", async (req, res) => {
 
   try {
     const user = await get(
-      `SELECT u.id, u.username, u.password, u.role,
+      `SELECT u.id, u.username, u.password, u.role, u.email_verified,
               COALESCE(i.pokedollars,0) AS pokedollars,
               COALESCE(i.pokeball,0)    AS pokeball,
               COALESCE(i.superball,0)   AS superball,
@@ -172,6 +172,7 @@ router.post("/login", async (req, res) => {
       hyperball:   user.hyperball,
       masterball:  user.masterball,
       role:        user.role || "user",
+      emailVerified: !!user.email_verified,
     });
   } catch (err) {
     console.error("Erreur login:", err);
@@ -202,8 +203,8 @@ router.post("/refresh", async (req, res) => {
 // ─── Rôle courant (sync après changement admin) ──────────────────────
 router.get("/me", verifyToken, async (req, res) => {
   try {
-    const user = await get(`SELECT role FROM users WHERE id = ?`, [req.user.id]);
-    res.json({ role: user?.role || "user" });
+    const user = await get(`SELECT role, email_verified FROM users WHERE id = ?`, [req.user.id]);
+    res.json({ role: user?.role || "user", emailVerified: !!user?.email_verified });
   } catch {
     res.status(500).json({ error: "Erreur serveur" });
   }
