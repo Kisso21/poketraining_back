@@ -61,7 +61,7 @@ router.post("/register", async (req, res) => {
     const userId = result.lastID;
 
     await run(`INSERT INTO inventory (user_id, pokeball) VALUES (?,5)`, [userId]);
-    await run(`INSERT INTO trainer_stats (user_id, stat_points_available) VALUES (?,5)`, [userId]);
+    await run(`INSERT INTO trainer_stats (user_id, stat_points_available) VALUES (?,2)`, [userId]);
 
     await Promise.all([
       ...PASSIVES.map(p => run(`INSERT OR IGNORE INTO user_passives (user_id, item) VALUES (?,?)`, [userId, p])),
