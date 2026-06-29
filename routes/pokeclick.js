@@ -44,6 +44,9 @@ const saveStaminaRec = (userId, pokemon, cur, ts) =>
       [userId, pokemon, cur, ts, cur, ts]);
 const ownsPokemon = async (userId, pokemon) =>
   !!(await get(`SELECT 1 FROM captures WHERE user_id = ? AND pokemon_name = ? LIMIT 1`, [userId, pokemon]));
+// Clé d'endurance : normal et shiny sont des entités distinctes (endurance indépendante).
+// Le nom de base sert toujours au HP et à la possession ; le suffixe ne touche que le stockage.
+const staminaKey = (name, shiny) => (shiny ? `${name}#shiny` : name);
 
 function getDailyLimit(ownedKeys) {
   if (ownedKeys.includes("goldball"))   return 10000;
@@ -134,7 +137,7 @@ router.post("/buy", async (req, res) => {
 
 // POST /click
 router.post("/click", async (req, res) => {
-  const { combo, pokemon, auto } = req.body;
+  const { combo, pokemon, auto, shiny } = req.body;
   const userId = req.user.id;
 
   try {
@@ -156,15 +159,16 @@ router.post("/click", async (req, res) => {
         return res.json({ success: true, gained: 0, remaining: Math.max(0, dailyLimit - earned), drops: [], exhausted: true });
       }
       const hp = POKEMON_HP[name];
+      const key = staminaKey(name, !!shiny);
       staminaMax = maxStaminaFor(hp);
-      const cur  = currentStamina(await loadStaminaRec(userId, name), hp);
+      const cur  = currentStamina(await loadStaminaRec(userId, key), hp);
       if (cur < 1) {
         // Ré-ancre pour figer la régénération courante, puis refuse le crédit/drop.
-        await saveStaminaRec(userId, name, cur, Date.now());
+        await saveStaminaRec(userId, key, cur, Date.now());
         return res.json({ success: true, gained: 0, remaining: Math.max(0, dailyLimit - earned), drops: [], exhausted: true, stamina: cur, staminaMax });
       }
       stamina = cur - 1;
-      await saveStaminaRec(userId, name, stamina, Date.now());
+      await saveStaminaRec(userId, key, stamina, Date.now());
     }
 
     // Combo (×0.1 par tranche de 20 clics, max ×2.0) — ne multiplie QUE les drops
@@ -282,7 +286,7 @@ router.post("/autoclick", async (req, res) => {
 // POST /heal — consomme 1 Potion pour restaurer 20 % d'endurance d'un Pokémon
 router.post("/heal", async (req, res) => {
   const userId = req.user.id;
-  const { pokemon } = req.body;
+  const { pokemon, shiny } = req.body;
   const name = typeof pokemon === "string" ? pokemon : null;
   // Valide AVANT de consommer : un Pokémon inconnu ne doit jamais gâcher une Potion.
   if (!name || !(name in POKEMON_HP)) {
@@ -290,8 +294,9 @@ router.post("/heal", async (req, res) => {
   }
   try {
     const hp         = POKEMON_HP[name];
+    const key        = staminaKey(name, !!shiny);
     const staminaMax = maxStaminaFor(hp);
-    const cur        = currentStamina(await loadStaminaRec(userId, name), hp);
+    const cur        = currentStamina(await loadStaminaRec(userId, key), hp);
 
     // Déjà au max : on ne consomme pas de Potion (évite le gaspillage sur double-clic).
     if (cur >= staminaMax) {
@@ -308,7 +313,7 @@ router.post("/heal", async (req, res) => {
 
     // Restauration d'endurance autoritative (+20 % du max) pour le Pokémon ciblé.
     const stamina = Math.min(staminaMax, cur + staminaMax * 0.2);
-    await saveStaminaRec(userId, name, stamina, Date.now());
+    await saveStaminaRec(userId, key, stamina, Date.now());
 
     res.json({ success: true, potion: inv?.potion ?? 0, stamina, staminaMax });
   } catch (err) {
