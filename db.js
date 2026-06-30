@@ -287,6 +287,8 @@ export async function initDB() {
     progress_json TEXT DEFAULT '{}',
     UNIQUE(username, arene)
   )`);
+  // Horodatage de la dernière victoire (conservé même après reset du cooldown)
+  try { await dbRun(`ALTER TABLE user_arenes ADD COLUMN won_at TEXT DEFAULT NULL`); } catch {}
 
   // PokéClick upgrades
   await dbRun(`CREATE TABLE IF NOT EXISTS pokeclick_upgrades (

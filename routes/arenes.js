@@ -380,8 +380,9 @@ router.post("/boss-victory/:username", async (req, res) => {
     const firstWin = !row?.defeated;
 
     await run(`INSERT OR IGNORE INTO user_arenes (username, arene, unlocked) VALUES (?,?,1)`, [username, BOSS_ID]);
-    // Victoire : on efface le cooldown (last_try) et la progression.
-    await run(`UPDATE user_arenes SET unlocked=1, defeated=1, in_progress=0, progress_json='{}', last_try=NULL WHERE username=? AND arene=?`, [username, BOSS_ID]);
+    // Victoire : on efface le cooldown (last_try) et la progression, mais on
+    // conserve l'horodatage de la dernière victoire dans won_at.
+    await run(`UPDATE user_arenes SET unlocked=1, defeated=1, in_progress=0, progress_json='{}', last_try=NULL, won_at=datetime('now') WHERE username=? AND arene=?`, [username, BOSS_ID]);
 
     // Jackpot accordé uniquement à la première victoire
     if (firstWin) {
@@ -392,6 +393,26 @@ router.post("/boss-victory/:username", async (req, res) => {
     }
 
     res.json({ success: true, firstWin, reward: firstWin ? BOSS_REWARD : null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /admin/boss-winners — liste des joueurs ayant vaincu le Créateur (+ date)
+router.get("/admin/boss-winners", async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Admin requis" });
+  try {
+    const rows = await all(
+      `SELECT username, won_at, last_try FROM user_arenes
+       WHERE arene = ? AND defeated = 1
+       ORDER BY (won_at IS NULL), won_at DESC`,
+      [BOSS_ID]
+    );
+    res.json(rows.map(r => ({
+      username: r.username,
+      // dernière victoire (won_at), repli sur last_try pour les anciennes victoires
+      lastWin: (r.won_at || r.last_try) ? (r.won_at || r.last_try).replace(' ', 'T') + 'Z' : null,
+    })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
