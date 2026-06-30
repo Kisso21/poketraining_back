@@ -197,9 +197,13 @@ router.post("/click", async (req, res) => {
     // Drops items (upgrade requis)
     if (owned.includes("drop_items")) {
       if (roll() < 0.0001875 * dropMult) { drops.push("potion");      await run(`UPDATE inventory SET potion      = potion      + 1 WHERE user_id = ?`, [userId]); }
-      if (roll() < 0.000125 * dropMult) { drops.push("resetball");   await run(`UPDATE inventory SET resetball   = resetball   + 1 WHERE user_id = ?`, [userId]); }
-      if (roll() < 0.00005 * dropMult) { drops.push("superbonbon"); await run(`UPDATE inventory SET superbonbon = superbonbon + 1 WHERE user_id = ?`, [userId]); }
+      if (roll() < 0.00005 * dropMult) { drops.push("resetball");   await run(`UPDATE inventory SET resetball   = resetball   + 1 WHERE user_id = ?`, [userId]); }
+      if (roll() < 0.000125 * dropMult) { drops.push("superbonbon"); await run(`UPDATE inventory SET superbonbon = superbonbon + 1 WHERE user_id = ?`, [userId]); }
+      if (roll() < 0.0001 * dropMult)   { drops.push("sablier");      await run(`UPDATE inventory SET sablier      = sablier      + 1 WHERE user_id = ?`, [userId]); }
       if (roll() < 0.0000125 * dropMult) { drops.push("lootbox");    await run(`UPDATE inventory SET lootbox     = lootbox     + 1 WHERE user_id = ?`, [userId]); }
+      if (roll() < 0.000015 * dropMult) { drops.push("ticketsafari"); await run(`UPDATE inventory SET ticketsafari = ticketsafari + 1 WHERE user_id = ?`, [userId]); }
+      if (roll() < 0.000015 * dropMult) { drops.push("goldappat");    await run(`UPDATE inventory SET goldappat    = goldappat    + 1 WHERE user_id = ?`, [userId]); }
+      if (roll() < 0.000006 * dropMult) { drops.push("charmeeclaire");await run(`UPDATE inventory SET charmeeclaire= charmeeclaire+ 1 WHERE user_id = ?`, [userId]); }
     }
 
     // Enregistrement de l'historique des drops

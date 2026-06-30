@@ -8,6 +8,9 @@ const router = Router();
 const DAILY_LIMIT = 5000;
 const POKEDOLLARS_DAILY_LIMIT = 50000;
 const MAX_POKEDOLLARS_DELTA = 5000;
+// Plafond plus élevé pour les DÉPENSES (montant négatif) : certains achats serveur
+// (ex. expédition safari à 10 000₽) dépassent le plafond des gains.
+const MAX_SPEND_DELTA = 100000;
 const MAX_ITEM_REWARD = 10;
 const VALID_ITEMS = new Set(["pokeball","superball","hyperball","masterball","resetball","superbonbon","potion","lootbox"]);
 
@@ -111,7 +114,7 @@ router.post("/pokedollars", async (req, res) => {
   // ce qui ferme définitivement la faille d'auto-crédit illimité.
   if (pokedollars > 0)
     return res.status(403).json({ error: "Crédit non autorisé : les gains sont attribués par le serveur." });
-  if (Math.abs(pokedollars) > MAX_POKEDOLLARS_DELTA)
+  if (Math.abs(pokedollars) > MAX_SPEND_DELTA)
     return res.status(400).json({ error: "Montant trop élevé" });
 
   try {

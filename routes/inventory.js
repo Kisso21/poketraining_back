@@ -4,10 +4,13 @@ import { getIO } from "../socket.js";
 
 const router = Router();
 
-const BALL_PRICES = { pokeball: 250, superball: 1000, hyperball: 2500, masterball: 100000 };
-const ITEM_PRICES = { superbonbon: 2000, potion: 500, lootbox: 3000, resetball: 5000 };
-const SELL_PRICES = { pokeball: 125, superball: 500, hyperball: 1250, masterball: 50000, resetball: 2500, superbonbon: 1000, potion: 250, lootbox: 1500 };
-const VALID_ITEMS = new Set(["pokeball","superball","hyperball","masterball","resetball","superbonbon","potion","lootbox","pokedollars"]);
+const BALL_PRICES = { pokeball: 250, superball: 1500, hyperball: 5000, masterball: 200000 };
+const ITEM_PRICES = { superbonbon: 2000, potion: 1500, lootbox: 3000, resetball: 10000,
+  ticketsafari: 50000, goldappat: 100000, charmeeclaire: 125000, sablier: 2000 };
+const SELL_PRICES = { pokeball: 75, superball: 450, hyperball: 1500, masterball: 60000, resetball: 3000, superbonbon: 600, potion: 450, lootbox: 900,
+  ticketsafari: 15000, goldappat: 30000, charmeeclaire: 37500, sablier: 600 };
+const VALID_ITEMS = new Set(["pokeball","superball","hyperball","masterball","resetball","superbonbon","potion","lootbox","pokedollars",
+  "ticketsafari","goldappat","sablier","charmeeclaire"]);
 
 function validItem(col) { return VALID_ITEMS.has(col); }
 
@@ -74,28 +77,32 @@ function getPokemonCategory(name) {
 
 // ── Loot table ───────────────────────────────────────────────────────────────
 // Total : 100% (50 + 40 + 7 + 2.5 + 0.5)
-const LOOT_TABLE = [
+export const LOOT_TABLE = [
   // ── Commun — 50% ──────────────────────────────────────────────────────────
   { key:"pokedollars", value:500,  qty:500,  rarity:"commun",     chance:20,   type:"item" },
   { key:"pokeball",    value:3,    qty:3,    rarity:"commun",     chance:18,   type:"item" },
   { key:"potion",      value:1,    qty:1,    rarity:"commun",     chance:12,   type:"item" },
   // ── Rare — 40% (39% items + 1% pokémon) ──────────────────────────────────
-  { key:"pokedollars", value:1000, qty:1000, rarity:"rare",       chance:18,   type:"item" },
+  { key:"pokedollars", value:1000, qty:1000, rarity:"rare",       chance:15,   type:"item" },
   { key:"superball",   value:2,    qty:2,    rarity:"rare",       chance:12,   type:"item" },
   { key:"superbonbon", value:1,    qty:1,    rarity:"rare",       chance:9,    type:"item" },
+  { key:"sablier",     value:1,    qty:1,    rarity:"rare",       chance:3,    type:"item" },
   { key:"pokemon",     catFilter:["stade1ou2","sansevo"], rarity:"rare",       chance:1,    type:"pokemon", isShiny:false },
-  // ── Épique — 7% (5.9% items + 1.1% pokémon) ──────────────────────────────
-  { key:"pokedollars", value:7500, qty:7500, rarity:"epique",     chance:2.5,  type:"item" },
+  // ── Épique — 7% ──────────────────────────────────────────────────────────
+  { key:"pokedollars",  value:7500, qty:7500, rarity:"epique",    chance:2.5,  type:"item" },
   { key:"hyperball",   value:1,    qty:1,    rarity:"epique",     chance:2,    type:"item" },
   { key:"resetball",   value:1,    qty:1,    rarity:"epique",     chance:1.4,  type:"item" },
   { key:"pokemon",     catFilter:["stade3"],  rarity:"epique",    chance:1,    type:"pokemon", isShiny:false },
   { key:"pokemon",     catFilter:["stade1ou2","sansevo"], rarity:"epique",     chance:0.1,  type:"pokemon", isShiny:true },
-  // ── Légendaire — 2.5% (2.39% items + 0.11% pokémon) ─────────────────────
-  { key:"pokedollars", value:15000, qty:15000, rarity:"legendaire", chance:2.39, type:"item" },
+  // ── Légendaire — 2.4% ───────────────────────────────────────────────────
+  { key:"pokedollars",   value:20000, qty:20000, rarity:"legendaire", chance:1,    type:"item" },
+  { key:"ticketsafari",  value:1,     qty:1,     rarity:"legendaire", chance:0.8,  type:"item" },
+  { key:"goldappat",     value:1,     qty:1,     rarity:"legendaire", chance:0.49, type:"item" },
   { key:"pokemon",     catFilter:["legendaire"], rarity:"legendaire",          chance:0.1,  type:"pokemon", isShiny:false },
   { key:"pokemon",     catFilter:["fossile","stade3"], rarity:"legendaire",    chance:0.01, type:"pokemon", isShiny:true },
-  // ── Mythique — 0.5% (0.4% masterball + 0.1% pokémon) ────────────────────
-  { key:"masterball",  value:1,    qty:1,    rarity:"mythique",   chance:0.4,  type:"item" },
+  // ── Mythique — 0.6% ─────────────────────────────────────────────────────
+  { key:"charmeeclaire", value:1,   qty:1,    rarity:"mythique",  chance:0.35, type:"item" },
+  { key:"masterball",   value:1,    qty:1,    rarity:"mythique",  chance:0.15, type:"item" },
   { key:"pokemon",     catFilter:["mythic"],  rarity:"mythique",  chance:0.09, type:"pokemon", isShiny:false },
   { key:"pokemon",     catFilter:["legendaire","mythic"], rarity:"mythique",   chance:0.01, type:"pokemon", isShiny:true },
 ];
@@ -139,7 +146,9 @@ function rollLootPrize(capturedSet, glitchActive = false, gen34Unlocked = false,
 async function getInventoryByUserId(userId) {
   return get(
     `SELECT pokedollars, pokeball, superball, hyperball, masterball,
-            resetball, superbonbon, potion, lootbox
+            resetball, superbonbon, potion, lootbox,
+            ticketsafari, goldappat, sablier, charmeeclaire,
+            armed_pokemon, armed_shiny
      FROM inventory
      WHERE user_id = ?`,
     [userId]
@@ -149,7 +158,9 @@ async function getInventoryByUserId(userId) {
 async function getInventoryByUsername(username) {
   return get(
     `SELECT i.pokedollars, i.pokeball, i.superball, i.hyperball, i.masterball,
-            i.resetball, i.superbonbon, i.potion, i.lootbox
+            i.resetball, i.superbonbon, i.potion, i.lootbox,
+            i.ticketsafari, i.goldappat, i.sablier, i.charmeeclaire,
+            i.armed_pokemon, i.armed_shiny
      FROM inventory i
      JOIN users u ON u.id = i.user_id
      WHERE u.username = ?`,
@@ -278,15 +289,70 @@ router.post("/shop/:username/sell", async (req, res) => {
 router.post("/useitem/:username", async (req, res) => {
   const username = req.user.username;
   const { item, gameType } = req.body;
-  const validItems = ["resetball","superbonbon","potion","lootbox"];
+  const validItems = ["resetball","superbonbon","potion","lootbox","ticketsafari","goldappat","sablier","charmeeclaire"];
   if (!item || !validItems.includes(item)) return res.status(400).json({ error: "Item non utilisable" });
 
   try {
     const user = await getUserByUsername(username);
     if (!user) return res.status(404).json({ error: "Utilisateur introuvable" });
 
-    const inv = await get(`SELECT resetball, superbonbon, potion, lootbox FROM inventory WHERE user_id = ?`, [user.id]);
+    const inv = await get(`SELECT resetball, superbonbon, potion, lootbox, ticketsafari, goldappat, sablier, charmeeclaire FROM inventory WHERE user_id = ?`, [user.id]);
     if ((inv?.[item] || 0) <= 0) return res.status(400).json({ error: "Objet non disponible" });
+
+    // ── Ticket Safari : remet à zéro les relances safari (gratuites + payantes) ──
+    if (item === "ticketsafari") {
+      const row   = await get(`SELECT state FROM game_states WHERE user_id = ? AND game_type = 'safari'`, [user.id]);
+      let state   = {};
+      try { state = row?.state ? JSON.parse(row.state) : {}; } catch {}
+      const today = new Date().toISOString().split("T")[0];
+      state = { ...state, date: today, freeUsed: 0, boughtUsed: 0 };
+      await run(
+        `INSERT INTO game_states (user_id, game_type, state) VALUES (?, 'safari', ?)
+         ON CONFLICT(user_id, game_type) DO UPDATE SET state = excluded.state, updated_at = CURRENT_TIMESTAMP`,
+        [user.id, JSON.stringify(state)]
+      );
+      await run(`UPDATE inventory SET ticketsafari = ticketsafari - 1 WHERE user_id = ?`, [user.id]);
+      const updated = await getInventoryByUsername(username);
+      getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
+      return res.json({ success: true, message: "🎫 Relances du Safari réinitialisées !", inventory: updated });
+    }
+
+    // ── Sablier : annule le cooldown d'UN seul jeu ──────────────────────────────
+    if (item === "sablier") {
+      if (!gameType) return res.status(400).json({ error: "gameType requis" });
+      await run(`UPDATE game_states SET next_available_at = ? WHERE user_id = ? AND game_type = ?`, [new Date().toISOString(), user.id, gameType]);
+      await run(`UPDATE inventory SET sablier = sablier - 1 WHERE user_id = ?`, [user.id]);
+      const updated = await getInventoryByUsername(username);
+      getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
+      return res.json({ success: true, message: `⏳ Cooldown du jeu ${gameType} annulé !`, inventory: updated });
+    }
+
+    // ── Gold Appât : arme le prochain Pokémon des jeux/safari ───────────────────
+    if (item === "goldappat") {
+      const pokemon = String(req.body.pokemon || "").trim();
+      if (!pokemon) return res.status(400).json({ error: "Pokémon requis" });
+      const gen12 = new Set([...GEN1_POKEMONS, ...GEN2_POKEMONS]);
+      const gen34 = new Set([...GEN3_POKEMONS, ...GEN4_POKEMONS]);
+      if (!gen12.has(pokemon) && !gen34.has(pokemon)) return res.status(400).json({ error: "Pokémon inconnu" });
+      if (gen34.has(pokemon)) {
+        const g = await get(`SELECT claimed FROM achievements WHERE user_id = ? AND achievement_id = 'unlock-gen3-4'`, [user.id]);
+        if (Number(g?.claimed) !== 1) return res.status(403).json({ error: "Tu n'as pas encore débloqué la Gen 3/4" });
+      }
+      await run(`UPDATE inventory SET armed_pokemon = ?, goldappat = goldappat - 1 WHERE user_id = ?`, [pokemon, user.id]);
+      const updated = await getInventoryByUsername(username);
+      getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
+      getIO()?.emit("sync:armed", { userId: user.id, armedPokemon: pokemon });
+      return res.json({ success: true, message: `🟡 ${pokemon} apparaîtra à ton prochain jeu !`, inventory: updated, armedPokemon: pokemon });
+    }
+
+    // ── Charme Éclair : arme un shiny garanti à la prochaine capture ────────────
+    if (item === "charmeeclaire") {
+      await run(`UPDATE inventory SET armed_shiny = 1, charmeeclaire = charmeeclaire - 1 WHERE user_id = ?`, [user.id]);
+      const updated = await getInventoryByUsername(username);
+      getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
+      getIO()?.emit("sync:armed", { userId: user.id, armedShiny: 1 });
+      return res.json({ success: true, message: "✨ Ton prochain Pokémon sera shiny !", inventory: updated, armedShiny: 1 });
+    }
 
     if (item === "resetball") {
       await run(`UPDATE inventory SET resetball = resetball - 1 WHERE user_id = ?`, [user.id]);
@@ -457,6 +523,35 @@ router.post("/safari-reward/:username", async (req, res) => {
     const updated = await getInventoryByUsername(username);
     getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
     res.json({ success: true, item, qty });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/inventory/consume-armed-pokemon — appelé quand le Gold Appât a forcé
+// le Pokémon d'un jeu (le front l'a utilisé pour le secret). Vide armed_pokemon.
+router.post("/consume-armed-pokemon/:username", async (req, res) => {
+  try {
+    const user = await getUserByUsername(req.user.username);
+    if (!user) return res.status(404).json({ error: "Utilisateur introuvable" });
+    await run(`UPDATE inventory SET armed_pokemon = NULL WHERE user_id = ?`, [user.id]);
+    getIO()?.emit("sync:armed", { userId: user.id, armedPokemon: null });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/inventory/consume-armed-shiny — appelé dès que le Charme Éclair a
+// rendu chromatique le Pokémon rencontré (au moment de la révélation). Remet
+// armed_shiny à 0 pour que la garantie ne s'applique qu'à CE Pokémon.
+router.post("/consume-armed-shiny/:username", async (req, res) => {
+  try {
+    const user = await getUserByUsername(req.user.username);
+    if (!user) return res.status(404).json({ error: "Utilisateur introuvable" });
+    await run(`UPDATE inventory SET armed_shiny = 0 WHERE user_id = ?`, [user.id]);
+    getIO()?.emit("sync:armed", { userId: user.id, armedShiny: 0 });
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }

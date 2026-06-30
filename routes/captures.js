@@ -76,6 +76,14 @@ router.post("/capture", async (req, res) => {
     const captureState = await getCaptureState(userId, pokemonName);
     if (!captureState) return res.status(403).json({ error: "Capture non autorisée pour cette partie" });
 
+    // ── Charme Éclair : si un shiny est armé, on force is_shiny et on le consomme ──
+    const armed = await get(`SELECT armed_shiny FROM inventory WHERE user_id = ?`, [userId]);
+    if (Number(armed?.armed_shiny) === 1) {
+      isShiny = 1;
+      await run(`UPDATE inventory SET armed_shiny = 0 WHERE user_id = ?`, [userId]);
+      getIO()?.emit("sync:armed", { userId, armedShiny: 0 });
+    }
+
     const result = await run(
       `INSERT OR IGNORE INTO captures (user_id, pokemon_name, is_shiny) VALUES (?,?,?)`,
       [userId, pokemonName, isShiny]

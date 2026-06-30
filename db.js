@@ -170,8 +170,25 @@ export async function initDB() {
     superbonbon INTEGER DEFAULT 0,
     potion      INTEGER DEFAULT 0,
     lootbox     INTEGER DEFAULT 0,
+    ticketsafari  INTEGER DEFAULT 0,
+    goldappat     INTEGER DEFAULT 0,
+    sablier       INTEGER DEFAULT 0,
+    charmeeclaire INTEGER DEFAULT 0,
+    armed_pokemon TEXT,
+    armed_shiny   INTEGER DEFAULT 0,
     FOREIGN KEY(user_id) REFERENCES users(id)
   )`);
+  // Migrations rétrocompatibles (silencieux si déjà présentes)
+  for (const col of [
+    "ticketsafari INTEGER DEFAULT 0",
+    "goldappat INTEGER DEFAULT 0",
+    "sablier INTEGER DEFAULT 0",
+    "charmeeclaire INTEGER DEFAULT 0",
+    "armed_pokemon TEXT",
+    "armed_shiny INTEGER DEFAULT 0",
+  ]) {
+    try { await dbRun(`ALTER TABLE inventory ADD COLUMN ${col}`); } catch {}
+  }
 
   // Niveau et stats — 1 ligne par joueur
   await dbRun(`CREATE TABLE IF NOT EXISTS trainer_stats (
@@ -295,6 +312,16 @@ export async function initDB() {
     ts      INTEGER NOT NULL,
     PRIMARY KEY(user_id, pokemon),
     FOREIGN KEY(user_id) REFERENCES users(id)
+  )`);
+
+  // Journal d'audit des actions globales admin (requêtes appliquées à tous les joueurs)
+  await dbRun(`CREATE TABLE IF NOT EXISTS admin_global_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin      TEXT NOT NULL,
+    op         TEXT NOT NULL,
+    detail     TEXT,
+    affected   INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
 
   // Historique drops PokéClick
@@ -492,6 +519,16 @@ export async function initDB() {
   // Migration : position (en %) du sprite sur la page piégée
   try { await dbRun(`ALTER TABLE team_rocket ADD COLUMN pos_x REAL`); } catch {}
   try { await dbRun(`ALTER TABLE team_rocket ADD COLUMN pos_y REAL`); } catch {}
+
+  // Historique : qui a retrouvé la Team Rocket et quel Pokémon a été récupéré
+  await dbRun(`CREATE TABLE IF NOT EXISTS team_rocket_history (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL,
+    username      TEXT    NOT NULL,
+    pokemon_name  TEXT    NOT NULL,
+    is_shiny      INTEGER NOT NULL DEFAULT 0,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`);
 
   // ── PokéVersus ────────────────────────────────────────────────────────────
   await dbRun(`CREATE TABLE IF NOT EXISTS versus_queue (

@@ -6,7 +6,7 @@ import { checkAchievements } from "./achievements.js";
 
 const router = Router();
 
-export const VALID_ITEMS = new Set(["pokeball","superball","hyperball","masterball","resetball","superbonbon","potion","lootbox","pokedollars"]);
+export const VALID_ITEMS = new Set(["pokeball","superball","hyperball","masterball","resetball","superbonbon","potion","lootbox","pokedollars","ticketsafari","goldappat","sablier","charmeeclaire"]);
 
 export async function giveReward(userId, rewardData) {
   for (const [item, qty] of Object.entries(rewardData)) {

@@ -5,9 +5,10 @@ import fs from "fs";
 import { execSync } from "child_process";
 import { run, get, all, GEN1_POKEMONS } from "../db.js";
 import { verifyAdmin, ALLOWED_ITEM_COLUMNS } from "../middleware/auth.js";
-import { emitToUser } from "../socket.js";
+import { emitToUser, getIO } from "../socket.js";
 import { broadcastRocket } from "./teamRocket.js";
 import { VALID_ITEMS } from "./events.js";
+import { LOOT_TABLE } from "./inventory.js";
 
 const router = Router();
 
@@ -19,7 +20,8 @@ router.get("/user/:username", async (req, res) => {
     const u = await get(
       `SELECT u.id, u.username, u.role,
               i.pokedollars, i.pokeball, i.superball, i.hyperball, i.masterball,
-              i.resetball, i.superbonbon, i.potion, i.lootbox
+              i.resetball, i.superbonbon, i.potion, i.lootbox,
+              i.ticketsafari, i.goldappat, i.sablier, i.charmeeclaire
        FROM users u LEFT JOIN inventory i ON i.user_id = u.id
        WHERE u.username = ?`, [req.params.username]
     );
@@ -40,7 +42,8 @@ router.post("/inventory/modify", async (req, res) => {
       [Math.round(delta), u.id]
     );
     const inv = await get(
-      `SELECT pokedollars, pokeball, superball, hyperball, masterball, resetball, superbonbon, potion, lootbox
+      `SELECT pokedollars, pokeball, superball, hyperball, masterball, resetball, superbonbon, potion, lootbox,
+              ticketsafari, goldappat, sablier, charmeeclaire
        FROM inventory WHERE user_id = ?`, [u.id]
     );
     res.json({ success: true, inventory: inv });
@@ -733,5 +736,128 @@ if (process.env.NODE_ENV !== "production") {
     res.json({ success: true, message: "ShinyDex rempli" });
   });
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   ACTIONS GLOBALES — appliquées à TOUS les joueurs en une requête
+   Sécurité : colonnes whitelistées (ALLOWED_ITEM_COLUMNS) → pas d'injection
+   SQL sur les noms de colonnes ; valeurs paramétrées et bornées ; UPDATE
+   unique atomique ; audit dans admin_global_log ; resync broadcast.
+══════════════════════════════════════════════════════════════════ */
+const GLOBAL_MAX_VALUE = 100_000_000;   // borne de sécurité sur les montants
+const intInRange = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) && Number.isInteger(n) && Math.abs(n) <= GLOBAL_MAX_VALUE ? n : null;
+};
+
+// POST /api/admin/global/apply
+// body: { op:"give"|"set"|"convert", item?, value?, from?, to?, rate? }
+router.post("/global/apply", async (req, res) => {
+  const { op } = req.body;
+
+  try {
+    let sql, params, detail, label;
+
+    if (op === "give") {
+      const { item } = req.body;
+      const value = intInRange(req.body.value);
+      if (!ALLOWED_ITEM_COLUMNS.has(item)) return res.status(400).json({ error: "Objet invalide" });
+      if (value === null || value === 0)   return res.status(400).json({ error: "Montant invalide" });
+      // Donne (ou retire si négatif) ; jamais en dessous de 0
+      sql = `UPDATE inventory SET ${item} = MAX(0, COALESCE(${item},0) + ?)`;
+      params = [value];
+      detail = { item, value };
+      label = `${value > 0 ? "+" : ""}${value} ${item} à tous`;
+
+    } else if (op === "set") {
+      const { item } = req.body;
+      const value = intInRange(req.body.value);
+      if (!ALLOWED_ITEM_COLUMNS.has(item)) return res.status(400).json({ error: "Objet invalide" });
+      if (value === null || value < 0)     return res.status(400).json({ error: "Valeur invalide" });
+      sql = `UPDATE inventory SET ${item} = ?`;
+      params = [value];
+      detail = { item, value };
+      label = `${item} = ${value} pour tous`;
+
+    } else if (op === "convert") {
+      const { from, to } = req.body;
+      const rate = intInRange(req.body.rate);
+      if (!ALLOWED_ITEM_COLUMNS.has(from) || !ALLOWED_ITEM_COLUMNS.has(to))
+        return res.status(400).json({ error: "Objet invalide" });
+      if (from === to)                  return res.status(400).json({ error: "Source et destination identiques" });
+      if (rate === null || rate <= 0)   return res.status(400).json({ error: "Taux invalide" });
+      // Pour chaque joueur possédant `from` : `to` += from*rate, puis `from` = 0
+      sql = `UPDATE inventory SET ${to} = MAX(0, COALESCE(${to},0) + COALESCE(${from},0) * ?), ${from} = 0 WHERE COALESCE(${from},0) > 0`;
+      params = [rate];
+      detail = { from, to, rate };
+      label = `${from} → ${to} (×${rate}) pour tous`;
+
+    } else {
+      return res.status(400).json({ error: "Opération inconnue" });
+    }
+
+    const result = await run(sql, params);
+    const affected = result?.changes ?? 0;
+
+    await run(
+      `INSERT INTO admin_global_log (admin, op, detail, affected) VALUES (?,?,?,?)`,
+      [req.user?.username || "?", op, JSON.stringify(detail), affected]
+    );
+
+    // Resync : un broadcast suffit, chaque client re-fetch son inventaire
+    getIO()?.emit("sync:inventory", {});
+
+    res.json({ success: true, affected, label });
+  } catch (err) {
+    console.error("Erreur global/apply:", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// GET /api/admin/lootbox-table — table de loot réelle (source unique de vérité)
+const POKEMON_LABEL = {
+  "stade1ou2,sansevo": "Pokémon Stade 1/2 ou sans évo",
+  "stade3":            "Pokémon Stade 3",
+  "legendaire":        "Pokémon Légendaire",
+  "fossile,stade3":    "Pokémon Fossile / Stade 3",
+  "mythic":            "Pokémon Mythique",
+  "legendaire,mythic": "Pokémon Légendaire / Mythique",
+};
+router.get("/lootbox-table", (req, res) => {
+  const total = LOOT_TABLE.reduce((s, e) => s + e.chance, 0);
+  const rows = LOOT_TABLE.map(e => {
+    let label;
+    if (e.type === "pokemon") {
+      const base = POKEMON_LABEL[(e.catFilter || []).join(",")] || "Pokémon";
+      label = e.isShiny ? `✦ Shiny ${base.replace(/^Pokémon /, "")}` : base;
+    } else {
+      label = e.key === "pokedollars" ? `Pokédollars ×${e.value}` : `${e.key} ×${e.value}`;
+    }
+    return { label, key: e.key, value: e.value ?? 1, type: e.type, rarity: e.rarity, chance: e.chance, isShiny: !!e.isShiny };
+  });
+  res.json({ total, rows });
+});
+
+// GET /api/admin/global/log — historique des actions globales
+router.get("/global/log", async (req, res) => {
+  try {
+    const rows = await all(`SELECT id, admin, op, detail, affected, created_at FROM admin_global_log ORDER BY id DESC LIMIT 30`);
+    res.json(rows.map(r => ({ ...r, detail: (() => { try { return JSON.parse(r.detail); } catch { return {}; } })() })));
+  } catch {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// GET /api/admin/teamrocket/history — qui a retrouvé la Team Rocket + Pokémon pris
+router.get("/teamrocket/history", async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT id, username, pokemon_name, is_shiny, created_at
+       FROM team_rocket_history ORDER BY id DESC LIMIT 50`
+    );
+    res.json(rows);
+  } catch {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
 
 export default router;

@@ -18,10 +18,11 @@ export function randomHidePage() {
   return HIDE_PAGES[Math.floor(Math.random() * HIDE_PAGES.length)];
 }
 
-// Position aléatoire (en %) en évitant les bords / le header.
+// Position aléatoire (en %) — coordonnées du CENTRE du sprite côté front.
+// Large amplitude pour couvrir tout l'écran (coins compris) sans déborder.
 export function randomPos() {
-  const x = Math.round((6 + Math.random() * 82) * 10) / 10;  // 6% → 88%
-  const y = Math.round((12 + Math.random() * 74) * 10) / 10; // 12% → 86%
+  const x = Math.round((5 + Math.random() * 90) * 10) / 10;  // 5% → 95%
+  const y = Math.round((10 + Math.random() * 82) * 10) / 10; // 10% → 92%
   return { x, y };
 }
 
@@ -145,6 +146,12 @@ router.post("/claim", async (req, res) => {
       }
       recovered.push({ name, isShiny: shiny, addedToReserve });
       getIO()?.emit("sync:pokedex", { userId, pokemonName: name, isShiny: shiny, addedToReserve, newAchievements: [] });
+      // Historique : trace qui a retrouvé la Team Rocket et le Pokémon récupéré
+      const u = await get("SELECT username FROM users WHERE id = ?", [userId]);
+      await run(
+        `INSERT INTO team_rocket_history (user_id, username, pokemon_name, is_shiny) VALUES (?,?,?,?)`,
+        [userId, u?.username || "?", name, shiny]
+      );
     }
 
     // Reset complet : le cycle recommence, le shop est débloqué

@@ -29,7 +29,7 @@ export function verifyAdmin(req, res, next) {
 
 // Colonnes autorisées pour éviter l'injection SQL sur les noms de colonnes
 const ALLOWED_BALL_COLUMNS = new Set(["pokeball","superball","hyperball","masterball","resetball","superbonbon","potion","lootbox"]);
-const ALLOWED_ITEM_COLUMNS = new Set(["pokeball","superball","hyperball","masterball","resetball","superbonbon","potion","lootbox","pokedollars"]);
+const ALLOWED_ITEM_COLUMNS = new Set(["pokeball","superball","hyperball","masterball","resetball","superbonbon","potion","lootbox","pokedollars","ticketsafari","goldappat","sablier","charmeeclaire"]);
 
 
 export function validateBallType(req, res, next) {
