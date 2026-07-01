@@ -73,7 +73,7 @@ try {
 } catch { /* fichier indisponible : on garde le mapping gen 1-2 */ }
 
 const router = Router();
-const COOLDOWN_MS = 30 * 60 * 1000;
+const COOLDOWN_MS = 20 * 60 * 1000;
 const VALID_GAME_TYPES = new Set(["pixel","atq","carte","text","galop","ombre","devinette","palette","cri","pokecharlie","pokeclick","safari","anagramme","dessin","memory","radar","stop"]);
 
 router.post("/game-state/:userId/:gameType", async (req, res) => {
@@ -172,15 +172,34 @@ router.post("/game/reset", async (req, res) => {
     // Rejouer la requête → reward_claimed déjà à 1 → aucun gain. Le client ne peut donc
     // plus se créditer à volonté (faille d'argent illimité fermée), et le montant est
     // calculé par le serveur (calcReward), pas dicté par le client.
+    // Grâce nouveaux joueurs : tant qu'il reste des parties gratuites, aucun
+    // cooldown n'est posé (le joueur enchaîne). Chaque partie terminée consomme
+    // 1 crédit → l'exposition reste bornée (pas de ferme illimitée).
+    let freePlaysLeft = 0;
     if (!alreadyActive) {
-      const nextAvailableAt = new Date(Date.now() + COOLDOWN_MS).toISOString();
-      await run(
-        `INSERT INTO game_states (user_id, game_type, state, next_available_at, reward_claimed)
-         VALUES (?,?,?,?,0)
-         ON CONFLICT(user_id, game_type)
-         DO UPDATE SET next_available_at = excluded.next_available_at, reward_claimed = 0, updated_at = CURRENT_TIMESTAMP`,
-        [userId, gameType, JSON.stringify({ reset: true }), nextAvailableAt]
-      );
+      const u = await get(`SELECT free_plays FROM users WHERE id = ?`, [userId]);
+      freePlaysLeft = u?.free_plays || 0;
+      if (freePlaysLeft > 0) {
+        await run(`UPDATE users SET free_plays = free_plays - 1 WHERE id = ?`, [userId]);
+        freePlaysLeft -= 1;
+        // Pas de cooldown : rejouable immédiatement (next_available_at = NULL)
+        await run(
+          `INSERT INTO game_states (user_id, game_type, state, next_available_at, reward_claimed)
+           VALUES (?,?,?,NULL,0)
+           ON CONFLICT(user_id, game_type)
+           DO UPDATE SET next_available_at = NULL, reward_claimed = 0, updated_at = CURRENT_TIMESTAMP`,
+          [userId, gameType, JSON.stringify({ reset: true })]
+        );
+      } else {
+        const nextAvailableAt = new Date(Date.now() + COOLDOWN_MS).toISOString();
+        await run(
+          `INSERT INTO game_states (user_id, game_type, state, next_available_at, reward_claimed)
+           VALUES (?,?,?,?,0)
+           ON CONFLICT(user_id, game_type)
+           DO UPDATE SET next_available_at = excluded.next_available_at, reward_claimed = 0, updated_at = CURRENT_TIMESTAMP`,
+          [userId, gameType, JSON.stringify({ reset: true }), nextAvailableAt]
+        );
+      }
     }
 
     let reward = 0;
@@ -210,7 +229,7 @@ router.post("/game/reset", async (req, res) => {
       }
     }
     const row = await get(`SELECT next_available_at FROM game_states WHERE user_id = ? AND game_type = ?`, [userId, gameType]);
-    res.json({ success: true, nextAvailableAt: row?.next_available_at || null, reward });
+    res.json({ success: true, nextAvailableAt: row?.next_available_at || null, reward, freePlaysLeft });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }

@@ -137,6 +137,10 @@ export async function initDB() {
   // Dernier jeu terminé
   try { await dbRun(`ALTER TABLE users ADD COLUMN last_game_type TEXT`); } catch {}
   try { await dbRun(`ALTER TABLE users ADD COLUMN last_game_at TIMESTAMP`); } catch {}
+  // Parties gratuites (sans cooldown) offertes aux nouveaux joueurs, décrémentées à chaque partie
+  try { await dbRun(`ALTER TABLE users ADD COLUMN free_plays INTEGER NOT NULL DEFAULT 0`); } catch {}
+  // Kit de départ réclamé (attribué une seule fois, à la validation de l'e-mail)
+  try { await dbRun(`ALTER TABLE users ADD COLUMN starter_claimed INTEGER NOT NULL DEFAULT 0`); } catch {}
 
   // Tokens de vérification d'email (valides 24h)
   await dbRun(`CREATE TABLE IF NOT EXISTS email_verification_tokens (

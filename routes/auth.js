@@ -7,6 +7,7 @@ import { PASSIVES, BADGES, ARENES } from "../db.js";
 import { verifyToken } from "../middleware/auth.js";
 import { sendVerificationEmail, sendWelcomeEmail, transporter } from "../mailer.js";
 import { giveReward } from "./events.js";
+import { getIO } from "../socket.js";
 
 const router = Router();
 
@@ -60,7 +61,9 @@ router.post("/register", async (req, res) => {
     );
     const userId = result.lastID;
 
-    await run(`INSERT INTO inventory (user_id, pokeball) VALUES (?,5)`, [userId]);
+    // Inventaire vide au départ — le kit est offert APRÈS la validation de l'e-mail
+    // (voir GET /verify-email), pour inciter le joueur à valider.
+    await run(`INSERT INTO inventory (user_id, pokeball) VALUES (?, 0)`, [userId]);
     await run(`INSERT INTO trainer_stats (user_id, stat_points_available) VALUES (?,2)`, [userId]);
 
     await Promise.all([
@@ -387,7 +390,28 @@ router.get("/verify-email", async (req, res) => {
     if (!row) return res.status(400).json({ error: "Lien invalide ou expiré" });
     await run(`UPDATE users SET email_verified = 1 WHERE id = ?`, [row.user_id]);
     await run(`UPDATE email_verification_tokens SET used = 1 WHERE id = ?`, [row.id]);
-    res.json({ success: true });
+
+    // Kit de départ offert à la validation (une seule fois, verrou starter_claimed)
+    let starterGranted = false;
+    const claim = await run(`UPDATE users SET starter_claimed = 1 WHERE id = ? AND starter_claimed = 0`, [row.user_id]);
+    if (claim.changes > 0) {
+      await run(
+        `UPDATE inventory SET
+           pokedollars = COALESCE(pokedollars,0) + 2500,
+           pokeball    = COALESCE(pokeball,0)    + 15,
+           superball   = COALESCE(superball,0)   + 5,
+           potion      = COALESCE(potion,0)      + 3,
+           lootbox     = COALESCE(lootbox,0)     + 1,
+           resetball   = COALESCE(resetball,0)   + 1,
+           sablier     = COALESCE(sablier,0)     + 5
+         WHERE user_id = ?`,
+        [row.user_id]
+      );
+      await run(`UPDATE users SET free_plays = 10 WHERE id = ?`, [row.user_id]);
+      getIO()?.emit("sync:inventory", { userId: row.user_id });
+      starterGranted = true;
+    }
+    res.json({ success: true, starterGranted });
   } catch (err) {
     console.error("Erreur verify-email:", err);
     res.status(500).json({ error: "Erreur serveur" });
