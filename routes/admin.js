@@ -8,7 +8,8 @@ import { verifyAdmin, ALLOWED_ITEM_COLUMNS } from "../middleware/auth.js";
 import { emitToUser, getIO } from "../socket.js";
 import { broadcastRocket } from "./teamRocket.js";
 import { VALID_ITEMS } from "./events.js";
-import { LOOT_TABLE } from "./inventory.js";
+import { LOOT_TABLE, SHOP_ITEM_KEYS } from "./inventory.js";
+import { parisParts, multiplierFor, lootboxFor, baseForDay, BASE_START, BASE_STEP, specialDaysForMonth } from "./dailyLogin.js";
 
 const router = Router();
 
@@ -843,6 +844,174 @@ router.get("/global/log", async (req, res) => {
     const rows = await all(`SELECT id, admin, op, detail, affected, created_at FROM admin_global_log ORDER BY id DESC LIMIT 30`);
     res.json(rows.map(r => ({ ...r, detail: (() => { try { return JSON.parse(r.detail); } catch { return {}; } })() })));
   } catch {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// GET /api/admin/shop/prices — prix actuels (achat/vente) de la boutique
+router.get("/shop/prices", async (req, res) => {
+  try {
+    const rows = await all(`SELECT item, buy, sell FROM shop_prices`);
+    res.json(rows);
+  } catch {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/admin/shop/prices — met à jour les prix (achat/vente) de la boutique
+// body: { prices: [{ item, buy, sell }, ...] }
+router.post("/shop/prices", async (req, res) => {
+  const { prices } = req.body;
+  if (!Array.isArray(prices) || prices.length === 0) {
+    return res.status(400).json({ error: "Aucun prix fourni" });
+  }
+  const MAX = 1_000_000_000;
+  const allowed = new Set(SHOP_ITEM_KEYS);
+  const clean = [];
+  for (const p of prices) {
+    if (!p || !allowed.has(p.item)) continue;
+    const buy  = Math.round(Number(p.buy));
+    const sell = Math.round(Number(p.sell));
+    if (!Number.isFinite(buy) || !Number.isFinite(sell) || buy < 0 || sell < 0 || buy > MAX || sell > MAX) {
+      return res.status(400).json({ error: `Valeur invalide pour ${p.item}` });
+    }
+    clean.push({ item: p.item, buy, sell });
+  }
+  if (clean.length === 0) return res.status(400).json({ error: "Aucun prix valide" });
+  try {
+    for (const { item, buy, sell } of clean) {
+      await run(`UPDATE shop_prices SET buy = ?, sell = ? WHERE item = ?`, [buy, sell, item]);
+    }
+    // Avertit les clients que la boutique a changé (la ShopModal refetch à l'ouverture)
+    getIO()?.emit("shop:prices-updated", {});
+    const rows = await all(`SELECT item, buy, sell FROM shop_prices`);
+    res.json({ success: true, prices: rows });
+  } catch {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Calendrier de récompense quotidienne d'un joueur ──────────────────────
+function dailyMonthCtx() {
+  const { y, m, day } = parisParts();
+  const pad = n => String(n).padStart(2, "0");
+  return { year: y, month: m, today: day, daysInMonth: new Date(y, m, 0).getDate(), prefix: `${y}-${pad(m)}-`, pad };
+}
+
+// Recalcule la série (jours consécutifs se terminant à la dernière date cochée)
+// à partir de daily_claims → met à jour daily_login (donc le multiplicateur).
+async function recomputeDailyStreak(userId) {
+  const pad = n => String(n).padStart(2, "0");
+  const rows = await all(`SELECT claim_date FROM daily_claims WHERE user_id = ? ORDER BY claim_date DESC`, [userId]);
+  const cur = await get(`SELECT best_streak FROM daily_login WHERE user_id = ?`, [userId]);
+  if (!rows.length) {
+    await run(`INSERT INTO daily_login (user_id, streak, last_claim_date, best_streak) VALUES (?,0,NULL,?)
+               ON CONFLICT(user_id) DO UPDATE SET streak = 0, last_claim_date = NULL`, [userId, cur?.best_streak || 0]);
+    return { streak: 0 };
+  }
+  const set = new Set(rows.map(r => r.claim_date));
+  const last = rows[0].claim_date;
+  let streak = 0;
+  const d = new Date(last + "T00:00:00Z");
+  while (set.has(`${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`)) {
+    streak++;
+    d.setUTCDate(d.getUTCDate() - 1);
+  }
+  const best = Math.max(cur?.best_streak || 0, streak);
+  await run(`INSERT INTO daily_login (user_id, streak, last_claim_date, best_streak) VALUES (?,?,?,?)
+             ON CONFLICT(user_id) DO UPDATE SET streak = ?, last_claim_date = ?, best_streak = ?`,
+             [userId, streak, last, best, streak, last, best]);
+  return { streak };
+}
+
+// GET /api/admin/daily/:username — calendrier + série du joueur
+router.get("/daily/:username", async (req, res) => {
+  try {
+    const u = await get(`SELECT id FROM users WHERE username = ?`, [req.params.username]);
+    if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
+    const ctx = dailyMonthCtx();
+    const login = await get(`SELECT streak, last_claim_date, best_streak FROM daily_login WHERE user_id = ?`, [u.id]);
+    const claims = await all(
+      `SELECT claim_date FROM daily_claims WHERE user_id = ? AND claim_date LIKE ?`,
+      [u.id, ctx.prefix + "%"]
+    );
+    const streak = login?.streak || 0;
+    res.json({
+      year: ctx.year, month: ctx.month, today: ctx.today, daysInMonth: ctx.daysInMonth,
+      claimedDays: claims.map(c => Number(c.claim_date.slice(8, 10))),
+      streak,
+      bestStreak: login?.best_streak || 0,
+      multiplier: multiplierFor(streak),
+      lastClaim: login?.last_claim_date || null,
+      specialDays: specialDaysForMonth(ctx.year, ctx.month, ctx.daysInMonth),
+      config: { baseStart: BASE_START, baseStep: BASE_STEP },
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/admin/daily/:username/toggle — coche/décoche un jour du mois courant
+router.post("/daily/:username/toggle", async (req, res) => {
+  try {
+    const u = await get(`SELECT id FROM users WHERE username = ?`, [req.params.username]);
+    if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
+    const ctx = dailyMonthCtx();
+    const day = parseInt(req.body.day, 10);
+    if (!Number.isInteger(day) || day < 1 || day > ctx.daysInMonth) {
+      return res.status(400).json({ error: "Jour invalide" });
+    }
+    const date = ctx.prefix + ctx.pad(day);
+    const exists = await get(`SELECT 1 AS c FROM daily_claims WHERE user_id = ? AND claim_date = ?`, [u.id, date]);
+
+    if (exists) await run(`DELETE FROM daily_claims WHERE user_id = ? AND claim_date = ?`, [u.id, date]);
+    else        await run(`INSERT OR IGNORE INTO daily_claims (user_id, claim_date) VALUES (?,?)`, [u.id, date]);
+
+    // Recalcule la série (donc le multiplicateur) d'après les jours cochés
+    const { streak } = await recomputeDailyStreak(u.id);
+    const mult = multiplierFor(streak);
+
+    let reward = null;
+    if (!exists) {
+      // Coche : crédite la récompense du jour (base × multiplicateur recalculé)
+      const money = Math.round(baseForDay(day) * mult);
+      const count = lootboxFor(mult);
+      let item = specialDaysForMonth(ctx.year, ctx.month, ctx.daysInMonth)[day] || "lootbox";
+      if (!["lootbox", "hyperball", "resetball"].includes(item)) item = "lootbox"; // whitelist défensive
+      await run(`UPDATE inventory SET pokedollars = pokedollars + ?, ${item} = COALESCE(${item},0) + ? WHERE user_id = ?`, [money, count, u.id]);
+      getIO()?.emit("sync:inventory", { userId: u.id });
+      reward = { money, item, count, multiplier: mult };
+    }
+
+    const claims = await all(
+      `SELECT claim_date FROM daily_claims WHERE user_id = ? AND claim_date LIKE ?`,
+      [u.id, ctx.prefix + "%"]
+    );
+    res.json({ success: true, added: !exists, reward, streak, multiplier: mult, claimedDays: claims.map(c => Number(c.claim_date.slice(8, 10))) });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/admin/daily/:username/streak — fixe la série de connexion du joueur
+router.post("/daily/:username/streak", async (req, res) => {
+  try {
+    const u = await get(`SELECT id FROM users WHERE username = ?`, [req.params.username]);
+    if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
+    let streak = parseInt(req.body.streak, 10);
+    if (!Number.isInteger(streak) || streak < 0) streak = 0;
+    streak = Math.min(streak, 9999);
+    const ctx = dailyMonthCtx();
+    const today = ctx.prefix + ctx.pad(ctx.today);
+    const cur = await get(`SELECT best_streak FROM daily_login WHERE user_id = ?`, [u.id]);
+    const best = Math.max(cur?.best_streak || 0, streak);
+    await run(
+      `INSERT INTO daily_login (user_id, streak, last_claim_date, best_streak) VALUES (?,?,?,?)
+       ON CONFLICT(user_id) DO UPDATE SET streak = ?, last_claim_date = ?, best_streak = ?`,
+      [u.id, streak, today, best, streak, today, best]
+    );
+    res.json({ success: true, streak, bestStreak: best });
+  } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }
 });

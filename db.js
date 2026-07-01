@@ -532,6 +532,52 @@ export async function initDB() {
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
 
+  // ── Prix de la boutique (éditables via l'admin) ───────────────────────────
+  // Source d'autorité des transactions ET de l'affichage. Seedée une seule fois
+  // avec les valeurs par défaut ; les modifications admin écrasent les lignes.
+  await dbRun(`CREATE TABLE IF NOT EXISTS shop_prices (
+    item TEXT PRIMARY KEY,
+    buy  INTEGER NOT NULL,
+    sell INTEGER NOT NULL
+  )`);
+  const SHOP_SEED = [
+    ["pokeball", 250, 75], ["superball", 1500, 450], ["hyperball", 5000, 1500], ["masterball", 200000, 60000],
+    ["resetball", 10000, 3000], ["superbonbon", 2000, 600], ["potion", 1500, 450], ["lootbox", 3000, 900],
+    ["sablier", 2000, 600], ["ticketsafari", 50000, 15000], ["goldappat", 100000, 30000], ["charmeeclaire", 125000, 37500],
+  ];
+  for (const [item, buy, sell] of SHOP_SEED) {
+    await dbRun(`INSERT OR IGNORE INTO shop_prices (item, buy, sell) VALUES (?,?,?)`, [item, buy, sell]);
+  }
+
+  // ── Récompense de connexion quotidienne (streak) ──────────────────────────
+  await dbRun(`CREATE TABLE IF NOT EXISTS daily_login (
+    user_id         INTEGER PRIMARY KEY,
+    streak          INTEGER NOT NULL DEFAULT 0,
+    last_claim_date TEXT,
+    best_streak     INTEGER NOT NULL DEFAULT 0
+  )`);
+  // Un enregistrement par jour réclamé (pour cocher les cases du calendrier mensuel)
+  await dbRun(`CREATE TABLE IF NOT EXISTS daily_claims (
+    user_id    INTEGER NOT NULL,
+    claim_date TEXT    NOT NULL,
+    PRIMARY KEY (user_id, claim_date)
+  )`);
+
+  // ── Pokémon recherché (bounty) ────────────────────────────────────────────
+  await dbRun(`CREATE TABLE IF NOT EXISTS bounty (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    cycle_id     INTEGER NOT NULL DEFAULT 0,
+    pokemon_name TEXT,
+    prize        INTEGER NOT NULL DEFAULT 0,
+    started_at   TIMESTAMP
+  )`);
+  await dbRun(`INSERT OR IGNORE INTO bounty (id) VALUES (1)`);
+  await dbRun(`CREATE TABLE IF NOT EXISTS bounty_claims (
+    user_id  INTEGER NOT NULL,
+    cycle_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, cycle_id)
+  )`);
+
   // ── PokéVersus ────────────────────────────────────────────────────────────
   await dbRun(`CREATE TABLE IF NOT EXISTS versus_queue (
     username  TEXT PRIMARY KEY,

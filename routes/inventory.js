@@ -4,15 +4,16 @@ import { getIO } from "../socket.js";
 
 const router = Router();
 
-const BALL_PRICES = { pokeball: 250, superball: 1500, hyperball: 5000, masterball: 200000 };
-const ITEM_PRICES = { superbonbon: 2000, potion: 1500, lootbox: 3000, resetball: 10000,
-  ticketsafari: 50000, goldappat: 100000, charmeeclaire: 125000, sablier: 2000 };
-const SELL_PRICES = { pokeball: 75, superball: 450, hyperball: 1500, masterball: 60000, resetball: 3000, superbonbon: 600, potion: 450, lootbox: 900,
-  ticketsafari: 15000, goldappat: 30000, charmeeclaire: 37500, sablier: 600 };
-const VALID_ITEMS = new Set(["pokeball","superball","hyperball","masterball","resetball","superbonbon","potion","lootbox","pokedollars",
-  "ticketsafari","goldappat","sablier","charmeeclaire"]);
+// Les 4 premiers sont des "balls", le reste des "objets" (pour le libellé d'achat).
+const BALL_KEYS = ["pokeball","superball","hyperball","masterball"];
+export const SHOP_ITEM_KEYS = [...BALL_KEYS, "resetball","superbonbon","potion","lootbox","sablier","ticketsafari","goldappat","charmeeclaire"];
+const VALID_ITEMS = new Set([...SHOP_ITEM_KEYS, "pokedollars"]);
 
 function validItem(col) { return VALID_ITEMS.has(col); }
+
+// Prix lus en base (table shop_prices, éditable via l'admin) → source d'autorité.
+async function getBuyPrice(item)  { const r = await get(`SELECT buy  FROM shop_prices WHERE item = ?`, [item]); return r ? r.buy  : null; }
+async function getSellPrice(item) { const r = await get(`SELECT sell FROM shop_prices WHERE item = ?`, [item]); return r ? r.sell : null; }
 
 // ── Pokémon categories for lootbox ──────────────────────────────────────────
 const FOSSILS = new Set([
@@ -65,7 +66,7 @@ const STAGE3 = new Set([
 ]);
 const GLITCH = new Set(["MissingNo"]);
 
-function getPokemonCategory(name) {
+export function getPokemonCategory(name) {
   if (MYTHICS.has(name))     return "mythic";
   if (LEGENDARIES.has(name)) return "legendaire";
   if (FOSSILS.has(name))     return "fossile";
@@ -206,6 +207,18 @@ router.post("/useball/:username", async (req, res) => {
   }
 });
 
+// GET /api/inventory/shop/prices — prix actuels (achat/vente) de tous les objets
+router.get("/shop/prices", async (req, res) => {
+  try {
+    const rows = await all(`SELECT item, buy, sell FROM shop_prices`);
+    const map = {};
+    rows.forEach(r => { map[r.item] = { buy: r.buy, sell: r.sell }; });
+    res.json(map);
+  } catch {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // POST /api/inventory/shop/:username/buy
 router.post("/shop/:username/buy", async (req, res) => {
   const username = req.user.username;
@@ -216,23 +229,20 @@ router.post("/shop/:username/buy", async (req, res) => {
   if (!Number.isFinite(qty) || qty < 1) qty = 1;
   qty = Math.min(qty, 99);
 
-  let unitCost, col, msg;
-  if (ballType && BALL_PRICES[ballType]) {
-    unitCost = BALL_PRICES[ballType]; col = ballType;
-    msg = qty > 1 ? `Tu as acheté ${qty} ${ballType} !` : `Tu as acheté une ${ballType} !`;
-  } else if (item && ITEM_PRICES[item]) {
-    unitCost = ITEM_PRICES[item]; col = item;
-    msg = qty > 1 ? `Tu as acheté ${qty} ${item} !` : `Tu as acheté un ${item} !`;
-  } else {
+  const col = ballType || item;
+  if (!col || !validItem(col) || col === "pokedollars" || !SHOP_ITEM_KEYS.includes(col)) {
     return res.status(400).json({ error: "Achat invalide" });
   }
-  if (!validItem(col)) return res.status(400).json({ error: "Objet invalide" });
-
-  const cost = unitCost * qty;
 
   try {
     const user = await getUserByUsername(username);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+
+    const unitCost = await getBuyPrice(col);
+    if (unitCost == null) return res.status(400).json({ error: "Objet invalide" });
+    const cost = unitCost * qty;
+    const isBall = BALL_KEYS.includes(col);
+    const msg = qty > 1 ? `Tu as acheté ${qty} ${col} !` : (isBall ? `Tu as acheté une ${col} !` : `Tu as acheté un ${col} !`);
 
     const inv = await get(`SELECT pokedollars FROM inventory WHERE user_id = ?`, [user.id]);
     if ((inv?.pokedollars || 0) < cost) return res.status(400).json({ error: "Pas assez de Pokédollars" });
@@ -254,7 +264,7 @@ router.post("/shop/:username/sell", async (req, res) => {
   const username = req.user.username;
   const target = req.body.ballType || req.body.item;
 
-  if (!target || !SELL_PRICES[target] || !validItem(target))
+  if (!target || !validItem(target) || target === "pokedollars" || !SHOP_ITEM_KEYS.includes(target))
     return res.status(400).json({ error: "Vente invalide" });
 
   // Quantité optionnelle (défaut 1, plafonnée à 99 et au stock disponible)
@@ -266,12 +276,15 @@ router.post("/shop/:username/sell", async (req, res) => {
     const user = await getUserByUsername(username);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
 
+    const unitSell = await getSellPrice(target);
+    if (unitSell == null) return res.status(400).json({ error: "Vente invalide" });
+
     const inv = await get(`SELECT ${target} FROM inventory WHERE user_id = ?`, [user.id]);
     const stock = inv?.[target] || 0;
     if (stock <= 0) return res.status(400).json({ error: `Tu n'as pas de ${target} à vendre` });
 
     const sellQty = Math.min(qty, stock);
-    const value   = SELL_PRICES[target] * sellQty;
+    const value   = unitSell * sellQty;
     await run(
       `UPDATE inventory SET pokedollars = pokedollars + ?, ${target} = ${target} - ? WHERE user_id = ?`,
       [value, sellQty, user.id]

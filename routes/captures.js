@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { run, get, all, GEN1_POKEMONS, GEN2_POKEMONS, GEN3_POKEMONS, GEN4_POKEMONS } from "../db.js";
 import { checkAchievements } from "./achievements.js";
+import { awardBountyIfMatch } from "./bounty.js";
 import { getIO } from "../socket.js";
 
 const router = Router();
@@ -109,8 +110,10 @@ router.post("/capture", async (req, res) => {
 });
 
 // POST /api/pokedex/seen — marque un Pokémon comme rencontré pendant une partie
+// La prime « Pokémon recherché » se déclenche ICI (à la RENCONTRE, pas à la capture).
 router.post("/pokedex/seen", async (req, res) => {
   let { pokemonName } = req.body;
+  const isShiny = Number(req.body.isShiny) === 1 ? 1 : 0;
   if (!pokemonName) return res.status(400).json({ error: "Données manquantes" });
   pokemonName = String(pokemonName).trim();
   if (!CAPTURABLE_SET.has(pokemonName)) return res.status(400).json({ error: "Pokémon invalide" });
@@ -120,7 +123,9 @@ router.post("/pokedex/seen", async (req, res) => {
        ON CONFLICT(user_id, pokemon_name) DO UPDATE SET seen_count = seen_count + 1`,
       [req.user.id, pokemonName]
     );
-    res.json({ success: true });
+    // Prime versée dès la rencontre (normal = prime, shiny = ×2), 1×/cycle/joueur
+    const bounty = await awardBountyIfMatch(req.user.id, pokemonName, isShiny);
+    res.json({ success: true, bounty });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }
