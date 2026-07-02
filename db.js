@@ -244,6 +244,43 @@ export async function initDB() {
   // Récompense déjà encaissée pour la fenêtre de cooldown courante (anti double-crédit).
   try { await dbRun(`ALTER TABLE game_states ADD COLUMN reward_claimed INTEGER NOT NULL DEFAULT 0`); } catch {}
 
+  // ── Safari : quota journalier AUTORITATIF côté serveur ────────────────────
+  // Le quota (parties gratuites/payantes) et l'autorisation des récompenses ne
+  // sont plus pilotés par le client. Chaque démarrage consomme atomiquement un
+  // crédit et émet un jeton de partie ; seules les récompenses de ce jeton sont
+  // accordées (dans la limite d'un plafond). Ferme la faille du multi-navigateur
+  // qui permettait de rejouer la même partie et de doubler les gains.
+  await dbRun(`CREATE TABLE IF NOT EXISTS safari_daily (
+    user_id     INTEGER NOT NULL,
+    date        TEXT    NOT NULL,
+    free_used   INTEGER NOT NULL DEFAULT 0,
+    bought_used INTEGER NOT NULL DEFAULT 0,
+    active_run  TEXT,
+    run_rewards INTEGER NOT NULL DEFAULT 0,
+    steps_left  INTEGER NOT NULL DEFAULT 100,
+    PRIMARY KEY (user_id, date)
+  )`);
+  // Pool de pas COMMUN de la partie active (autoritatif) : deux appareils qui
+  // jouent la même partie puisent dans le même compteur → pas de double marche.
+  try { await dbRun(`ALTER TABLE safari_daily ADD COLUMN steps_left INTEGER NOT NULL DEFAULT 100`); } catch {}
+  // Position COMMUNE du personnage (synchronisée en temps réel entre appareils) :
+  // impossible d'être sur deux cases / d'aller dans deux directions différentes.
+  try { await dbRun(`ALTER TABLE safari_daily ADD COLUMN pos_col INTEGER`); } catch {}
+  try { await dbRun(`ALTER TABLE safari_daily ADD COLUMN pos_row INTEGER`); } catch {}
+  try { await dbRun(`ALTER TABLE safari_daily ADD COLUMN facing TEXT`); } catch {}
+  // Verrou de rencontre (JSON {id, pokemon, isShiny, source}) : UNE seule rencontre
+  // active par partie. Deux appareils ne peuvent plus capturer en parallèle.
+  try { await dbRun(`ALTER TABLE safari_daily ADD COLUMN active_encounter TEXT`); } catch {}
+  // Actions de récompense DÉJÀ consommées par partie (coffre précis, objectif,
+  // marchand…). Rend chaque récompense idempotente : deux appareils qui partagent
+  // la même partie (même jeton) ne peuvent ouvrir le même coffre qu'une seule fois.
+  await dbRun(`CREATE TABLE IF NOT EXISTS safari_run_actions (
+    user_id   INTEGER NOT NULL,
+    token     TEXT    NOT NULL,
+    action_id TEXT    NOT NULL,
+    PRIMARY KEY (token, action_id)
+  )`);
+
   // Succès — inchangé
   await dbRun(`CREATE TABLE IF NOT EXISTS achievements (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,

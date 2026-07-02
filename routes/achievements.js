@@ -1455,13 +1455,13 @@ export async function checkAchievements(userId) {
       if ((inv?.pokedollars || 0) >= 20000) toUnlock.push("unlock-casino");
     }
 
-    // Safari : total captures >= 50
-    if (!unlockedSet.has("unlock-safari") && totalCount >= 50) toUnlock.push("unlock-safari");
+    // Safari : total captures >= 30
+    if (!unlockedSet.has("unlock-safari") && totalCount >= 30) toUnlock.push("unlock-safari");
 
-    // PokéTrade : 3 Pokémon en réserve
+    // PokéTrade : 1 Pokémon en réserve (doublon)
     if (!unlockedSet.has("unlock-poketrade")) {
       const resRow = await get(`SELECT COUNT(*) as cnt FROM pokemon_reserve WHERE user_id = ?`, [userId]);
-      if ((resRow?.cnt || 0) >= 3) toUnlock.push("unlock-poketrade");
+      if ((resRow?.cnt || 0) >= 1) toUnlock.push("unlock-poketrade");
     }
 
     // PokéArène : 6 Pokémon différents dans le Pokédex
@@ -1498,11 +1498,11 @@ export async function checkAchievements(userId) {
     }
     if (!unlockedSet.has("unlock-safari")) {
       const row = await get(`SELECT COUNT(*) as cnt FROM captures WHERE user_id = ?`, [userId]);
-      if ((row?.cnt || 0) >= 50) toUnlock.push("unlock-safari");
+      if ((row?.cnt || 0) >= 30) toUnlock.push("unlock-safari");
     }
     if (!unlockedSet.has("unlock-poketrade")) {
       const resRow = await get(`SELECT COUNT(*) as cnt FROM pokemon_reserve WHERE user_id = ?`, [userId]);
-      if ((resRow?.cnt || 0) >= 3) toUnlock.push("unlock-poketrade");
+      if ((resRow?.cnt || 0) >= 1) toUnlock.push("unlock-poketrade");
     }
     if (!unlockedSet.has("unlock-arene")) {
       const capRow = await get(`SELECT COUNT(DISTINCT pokemon_name) as cnt FROM captures WHERE user_id = ?`, [userId]);

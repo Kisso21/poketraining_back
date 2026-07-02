@@ -1,8 +1,19 @@
 import { Router } from "express";
+import { randomUUID } from "crypto";
 import { run, get, all, GEN1_POKEMONS, GEN2_POKEMONS, GEN3_POKEMONS, GEN4_POKEMONS } from "../db.js";
-import { getIO } from "../socket.js";
+import { getIO, emitToUser } from "../socket.js";
 
 const router = Router();
+
+// ── Safari : paramètres du quota journalier (le SERVEUR fait foi) ────────────
+const SAFARI_FREE_PER_DAY   = 2;
+const SAFARI_MAX_BOUGHT     = 3;
+const SAFARI_EXPEDITION_COST = 10000;
+const SAFARI_MAX_STEPS      = 100;
+// Plafond de récompenses accordées par partie (large : une partie légitime en
+// distribue ~14 — coffres, objectif, marchand). Empêche le farming d'un jeton.
+const SAFARI_RUN_REWARD_CAP = 30;
+const safariToday = () => new Date().toISOString().slice(0, 10);
 
 // Les 4 premiers sont des "balls", le reste des "objets" (pour le libellé d'achat).
 const BALL_KEYS = ["pokeball","superball","hyperball","masterball"];
@@ -324,6 +335,12 @@ router.post("/useitem/:username", async (req, res) => {
          ON CONFLICT(user_id, game_type) DO UPDATE SET state = excluded.state, updated_at = CURRENT_TIMESTAMP`,
         [user.id, JSON.stringify(state)]
       );
+      // Réinitialise aussi le quota AUTORITATIF serveur du jour (source de vérité)
+      await run(
+        `INSERT INTO safari_daily (user_id, date, free_used, bought_used) VALUES (?, ?, 0, 0)
+         ON CONFLICT(user_id, date) DO UPDATE SET free_used = 0, bought_used = 0, active_run = NULL, run_rewards = 0`,
+        [user.id, today]
+      );
       await run(`UPDATE inventory SET ticketsafari = ticketsafari - 1 WHERE user_id = ?`, [user.id]);
       const updated = await getInventoryByUsername(username);
       getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
@@ -503,15 +520,214 @@ const SAFARI_PD_TIERS = [
   { w: 2,  min: 1500, max: 2500 },
 ];
 
+// GET /api/inventory/safari-quota — quota du jour (affichage), source serveur
+router.get("/safari-quota/:username", async (req, res) => {
+  try {
+    const user = await getUserByUsername(req.user.username);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    const date = safariToday();
+    const row = await get(`SELECT free_used, bought_used FROM safari_daily WHERE user_id = ? AND date = ?`, [user.id, date]);
+    res.json({ success: true, freeUsed: row?.free_used || 0, boughtUsed: row?.bought_used || 0, freePerDay: SAFARI_FREE_PER_DAY, maxBought: SAFARI_MAX_BOUGHT, cost: SAFARI_EXPEDITION_COST });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/inventory/safari-start — consomme ATOMIQUEMENT un crédit de quota et
+// émet un jeton de partie. Deux navigateurs ne peuvent plus démarrer « la même »
+// partie gratuite : chaque démarrage consomme un crédit distinct (gratuit puis
+// payant), et les récompenses sont liées au jeton retourné.
+router.post("/safari-start/:username", async (req, res) => {
+  try {
+    const user = await getUserByUsername(req.user.username);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    const date  = safariToday();
+    const token = randomUUID();
+    await run(`INSERT OR IGNORE INTO safari_daily (user_id, date) VALUES (?, ?)`, [user.id, date]);
+
+    // 1) Tentative de crédit GRATUIT (atomique via la clause WHERE)
+    let r = await run(
+      `UPDATE safari_daily SET free_used = free_used + 1, active_run = ?, run_rewards = 0, steps_left = ?, active_encounter = NULL
+       WHERE user_id = ? AND date = ? AND free_used < ?`,
+      [token, SAFARI_MAX_STEPS, user.id, date, SAFARI_FREE_PER_DAY]
+    );
+    let paid = false;
+
+    if (r.changes !== 1) {
+      // 2) Plus de gratuit → réserve un crédit PAYANT (atomique), puis débite.
+      r = await run(
+        `UPDATE safari_daily SET bought_used = bought_used + 1, active_run = ?, run_rewards = 0, steps_left = ?, active_encounter = NULL
+         WHERE user_id = ? AND date = ? AND bought_used < ?`,
+        [token, SAFARI_MAX_STEPS, user.id, date, SAFARI_MAX_BOUGHT]
+      );
+      if (r.changes !== 1) return res.status(403).json({ error: "Limite journalière atteinte" });
+
+      const pay = await run(
+        `UPDATE inventory SET pokedollars = pokedollars - ?
+         WHERE user_id = ? AND COALESCE(pokedollars, 0) >= ?`,
+        [SAFARI_EXPEDITION_COST, user.id, SAFARI_EXPEDITION_COST]
+      );
+      if (pay.changes !== 1) {
+        // Fonds insuffisants → on rend le crédit réservé (uniquement si c'est bien le nôtre)
+        await run(`UPDATE safari_daily SET bought_used = bought_used - 1, active_run = NULL WHERE user_id = ? AND date = ? AND active_run = ?`, [user.id, date, token]);
+        return res.status(402).json({ error: "Pokédollars insuffisants" });
+      }
+      paid = true;
+    }
+
+    const row = await get(`SELECT free_used, bought_used FROM safari_daily WHERE user_id = ? AND date = ?`, [user.id, date]);
+    if (paid) {
+      const inv = await getInventoryByUsername(req.user.username);
+      getIO()?.emit("sync:inventory", { userId: user.id, inventory: inv });
+    }
+    res.json({ success: true, token, freeUsed: row.free_used, boughtUsed: row.bought_used, paid, cost: paid ? SAFARI_EXPEDITION_COST : 0, stepsLeft: SAFARI_MAX_STEPS });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/inventory/safari-step — consomme le pool de pas COMMUN de la partie.
+// delta = variation nette des pas pour l'action (-1 déplacement, -perte obstacle,
+// +gain repos). Le serveur applique et renvoie le pool restant (autoritatif). Deux
+// appareils sur la même partie puisent dans le même compteur.
+router.post("/safari-step/:username", async (req, res) => {
+  const { token, facing } = req.body;
+  let delta = Number(req.body.delta);
+  if (!Number.isFinite(delta)) delta = -1;
+  delta = Math.max(-30, Math.min(30, Math.round(delta)));   // borne anti-forge
+  const col = Number.isInteger(req.body.col) ? req.body.col : null;
+  const row = Number.isInteger(req.body.row) ? req.body.row : null;
+  const dir = ["up","down","left","right"].includes(facing) ? facing : null;
+  try {
+    const user = await getUserByUsername(req.user.username);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    const date = safariToday();
+    const r = await run(
+      `UPDATE safari_daily
+       SET steps_left = MAX(0, MIN(?, steps_left + ?)),
+           pos_col = COALESCE(?, pos_col), pos_row = COALESCE(?, pos_row), facing = COALESCE(?, facing)
+       WHERE user_id = ? AND date = ? AND active_run = ?`,
+      [SAFARI_MAX_STEPS, delta, col, row, dir, user.id, date, token]
+    );
+    if (r.changes !== 1) return res.status(403).json({ error: "Partie safari invalide ou terminée" });
+    const rowdb = await get(`SELECT steps_left FROM safari_daily WHERE user_id = ? AND date = ?`, [user.id, date]);
+    // Diffuse la position/pool COMMUN aux autres sessions du joueur → même case partout
+    emitToUser(user.id, "safari:sync", { token, col, row, facing: dir, stepsLeft: rowdb.steps_left });
+    res.json({ success: true, stepsLeft: rowdb.steps_left });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/inventory/safari-encounter-start — VERROU de rencontre. Atomique :
+// n'accorde la rencontre que si aucune n'est active sur la partie. L'appareil
+// gagnant obtient un ID unique ; les autres reçoivent "safari:encounter" et se
+// verrouillent. Ferme la capture parallèle multi-appareils (gains doublés).
+router.post("/safari-encounter-start/:username", async (req, res) => {
+  const { token, pokemon, isShiny, source, deviceId } = req.body;
+  if (!token || !pokemon) return res.status(400).json({ error: "Paramètres manquants" });
+  try {
+    const user = await getUserByUsername(req.user.username);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    const date = safariToday();
+    const encId = randomUUID();
+    const enc = JSON.stringify({ id: encId, pokemon: String(pokemon).slice(0, 40), isShiny: !!isShiny, source: String(source || '').slice(0, 20) });
+    const r = await run(
+      `UPDATE safari_daily SET active_encounter = ?
+       WHERE user_id = ? AND date = ? AND active_run = ? AND active_encounter IS NULL AND steps_left > 0`,
+      [enc, user.id, date, token]
+    );
+    if (r.changes !== 1) {
+      const row = await get(`SELECT active_encounter FROM safari_daily WHERE user_id = ? AND date = ? AND active_run = ?`, [user.id, date, token]);
+      let existing = null; try { existing = row?.active_encounter ? JSON.parse(row.active_encounter) : null; } catch {}
+      return res.status(409).json({ error: "Rencontre déjà en cours", encounter: existing });
+    }
+    emitToUser(user.id, "safari:encounter", { token, deviceId: deviceId || null, encounter: JSON.parse(enc) });
+    res.json({ success: true, encId });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/inventory/safari-encounter-end — libère le verrou (seul l'ID courant
+// peut le faire) et prévient les autres appareils.
+router.post("/safari-encounter-end/:username", async (req, res) => {
+  const { token, encId, deviceId } = req.body;
+  try {
+    const user = await getUserByUsername(req.user.username);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    const date = safariToday();
+    const r = await run(
+      `UPDATE safari_daily SET active_encounter = NULL
+       WHERE user_id = ? AND date = ? AND active_run = ?
+         AND json_extract(active_encounter, '$.id') = ?`,
+      [user.id, date, token, encId]
+    );
+    if (r.changes === 1) emitToUser(user.id, "safari:encounter-end", { token, deviceId: deviceId || null, encId });
+    res.json({ success: true, released: r.changes === 1 });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// GET /api/inventory/safari-run-steps — pool de pas de la partie active (reprise)
+router.get("/safari-run-steps/:username", async (req, res) => {
+  try {
+    const user = await getUserByUsername(req.user.username);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    const token = req.query.token;
+    const row = await get(`SELECT steps_left, pos_col, pos_row, facing, active_encounter FROM safari_daily WHERE user_id = ? AND date = ? AND active_run = ?`, [user.id, safariToday(), token]);
+    let encounter = null; try { encounter = row?.active_encounter ? JSON.parse(row.active_encounter) : null; } catch {}
+    res.json({ success: true, stepsLeft: row ? row.steps_left : null, col: row?.pos_col ?? null, row: row?.pos_row ?? null, facing: row?.facing ?? null, encounter });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Réserve une ACTION de récompense pour la partie (jeton). Idempotent : chaque
+// action (ex. "chest:100:0", "objective", "merchant") n'est accordée qu'une seule
+// fois, même si deux appareils partagent la même partie. Renvoie :
+//   'ok'     → réservée, on peut accorder ;
+//   'dup'    → déjà réclamée (aucun gain) ;
+//   'invalid'→ jeton inactif / plafond atteint.
+async function safariReserveAction(userId, token, actionId) {
+  if (!token || !actionId) return 'invalid';
+  const active = await get(
+    `SELECT run_rewards FROM safari_daily WHERE user_id = ? AND date = ? AND active_run = ?`,
+    [userId, safariToday(), token]
+  );
+  if (!active) return 'invalid';
+  if (active.run_rewards >= SAFARI_RUN_REWARD_CAP) return 'invalid';
+  const ins = await run(
+    `INSERT OR IGNORE INTO safari_run_actions (user_id, token, action_id) VALUES (?, ?, ?)`,
+    [userId, token, actionId]
+  );
+  if (ins.changes !== 1) return 'dup';
+  await run(`UPDATE safari_daily SET run_rewards = run_rewards + 1 WHERE user_id = ? AND date = ? AND active_run = ?`, [userId, safariToday(), token]);
+  return 'ok';
+}
+
+// Récompenses serveur des objectifs (miroir du client) — le montant n'est plus
+// dicté par le client.
+const SAFARI_OBJECTIVE_REWARDS = {
+  enc7: { money: 3000 }, enc10: { money: 4000 }, enc15: { money: 5500 },
+  gold: { money: 2500 }, special: { lootbox: 1 }, shiny: { lootbox: 1 },
+  chest: { money: 2000 }, steps20: { money: 1500 }, steps50: { money: 2500 },
+  zones3: { money: 2500 }, buy: { money: 2000 }, trace: { money: 1500 }, scent: { money: 1500 },
+};
+
 router.post("/safari-reward/:username", async (req, res) => {
   const username = req.user.username;
-  const { item, qty } = req.body;
+  const { item, qty, token, actionId } = req.body;
 
   // Récompense Pokédollars : montant tiré côté serveur (anti-forge).
   if (item === "pokedollars") {
     try {
       const user = await getUserByUsername(username);
       if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+      const claim = await safariReserveAction(user.id, token, actionId);
+      if (claim === 'dup') return res.json({ success: true, item: "pokedollars", amount: 0, duplicate: true });
+      if (claim !== 'ok')  return res.status(403).json({ error: "Partie safari invalide ou terminée" });
       const total = SAFARI_PD_TIERS.reduce((s, t) => s + t.w, 0);
       let r = Math.random() * total, tier = SAFARI_PD_TIERS[0];
       for (const t of SAFARI_PD_TIERS) { if (r < t.w) { tier = t; break; } r -= t.w; }
@@ -525,17 +741,77 @@ router.post("/safari-reward/:username", async (req, res) => {
     }
   }
 
-  const ITEM_COLS = ["pokeball","superball","hyperball","masterball","resetball","superbonbon","potion","lootbox"];
+  const ITEM_COLS = ["pokeball","superball","hyperball","masterball","resetball","superbonbon","potion","lootbox","sablier","ticketsafari","goldappat","charmeeclaire"];
   if (!item || !ITEM_COLS.includes(item) || !Number.isInteger(qty) || qty < 1 || qty > 3) {
     return res.status(400).json({ error: "Récompense invalide" });
   }
   try {
     const user = await getUserByUsername(username);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    const claim = await safariReserveAction(user.id, token, actionId);
+    if (claim === 'dup') return res.json({ success: true, item, qty: 0, duplicate: true });
+    if (claim !== 'ok')  return res.status(403).json({ error: "Partie safari invalide ou terminée" });
     await run(`UPDATE inventory SET ${item} = COALESCE(${item}, 0) + ? WHERE user_id = ?`, [qty, user.id]);
     const updated = await getInventoryByUsername(username);
     getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
     res.json({ success: true, item, qty });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/inventory/safari-objective — bonus d'objectif (crédité 1× par partie).
+// Le montant vient du SERVEUR (mapping objectif→gain) et l'action "objective" est
+// dédupliquée : deux appareils sur la même partie ne l'encaissent qu'une fois.
+router.post("/safari-objective/:username", async (req, res) => {
+  const { objectiveId, token } = req.body;
+  const reward = SAFARI_OBJECTIVE_REWARDS[objectiveId];
+  if (!reward) return res.status(400).json({ error: "Objectif invalide" });
+  try {
+    const user = await getUserByUsername(req.user.username);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    const claim = await safariReserveAction(user.id, token, "objective");
+    if (claim === 'dup') return res.json({ success: true, duplicate: true, reward: {} });
+    if (claim !== 'ok')  return res.status(403).json({ error: "Partie safari invalide ou terminée" });
+    if (reward.money)   await run(`UPDATE inventory SET pokedollars = COALESCE(pokedollars,0) + ? WHERE user_id = ?`, [reward.money, user.id]);
+    if (reward.lootbox) await run(`UPDATE inventory SET lootbox = COALESCE(lootbox,0) + ? WHERE user_id = ?`, [reward.lootbox, user.id]);
+    const updated = await getInventoryByUsername(req.user.username);
+    getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
+    res.json({ success: true, reward });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/inventory/safari-merchant-buy — achat au marchand ambulant (−50 %),
+// atomique et dédupliqué (1× par partie). Prix calculé côté serveur.
+router.post("/safari-merchant-buy/:username", async (req, res) => {
+  const { item, token } = req.body;
+  const SAFARI_MERCHANT_ITEMS = new Set(["pokeball","superball","hyperball","resetball","superbonbon","potion","lootbox","sablier","ticketsafari","goldappat","charmeeclaire"]);
+  if (!SAFARI_MERCHANT_ITEMS.has(item)) return res.status(400).json({ error: "Objet invalide" });
+  try {
+    const user = await getUserByUsername(req.user.username);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    const buy = await getBuyPrice(item);
+    if (buy == null) return res.status(400).json({ error: "Objet invalide" });
+    const price = Math.floor(buy / 2);
+    // Réserve l'action AVANT le débit (dédup) ; on rendra la réservation si fonds insuffisants.
+    const claim = await safariReserveAction(user.id, token, "merchant");
+    if (claim === 'dup') return res.json({ success: true, duplicate: true });
+    if (claim !== 'ok')  return res.status(403).json({ error: "Partie safari invalide ou terminée" });
+    const pay = await run(
+      `UPDATE inventory SET pokedollars = pokedollars - ? WHERE user_id = ? AND COALESCE(pokedollars,0) >= ?`,
+      [price, user.id, price]
+    );
+    if (pay.changes !== 1) {
+      await run(`DELETE FROM safari_run_actions WHERE token = ? AND action_id = 'merchant'`, [token]);
+      await run(`UPDATE safari_daily SET run_rewards = MAX(0, run_rewards - 1) WHERE user_id = ? AND date = ? AND active_run = ?`, [user.id, safariToday(), token]);
+      return res.status(402).json({ error: "Pokédollars insuffisants" });
+    }
+    await run(`UPDATE inventory SET ${item} = COALESCE(${item},0) + 1 WHERE user_id = ?`, [user.id]);
+    const updated = await getInventoryByUsername(req.user.username);
+    getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
+    res.json({ success: true, item, price });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }
