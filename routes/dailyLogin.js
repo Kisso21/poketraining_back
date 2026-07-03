@@ -8,7 +8,7 @@ const router = Router();
 // Argent de base FIXE : 1000 ₽, auquel on applique le multiplicateur de série.
 export const BASE_START = 1000;
 export const BASE_STEP  = 0;        // base constante quel que soit le jour
-// Multiplicateur : +0,1 par jour de série (J1 ×1, J2 ×1,1 …). Plafonné ×3.
+// Multiplicateur : +0,1 par jour réclamé dans le mois, sans reset sur un jour manqué. Plafonné ×3.
 export const MULT_STEP = 0.1;
 export const MAX_MULT  = 3;         // ×3 atteint vers J21 → reste ×3 jusqu'à J30+
 // Lootbox/jour = partie entière du multiplicateur (au moins 1)
@@ -56,17 +56,6 @@ export function parisParts(d = new Date()) {
   const [y, m, day] = s.split("-").map(Number);
   return { y, m, day };
 }
-function dateStr(d = new Date()) {
-  const { y, m, day } = parisParts(d);
-  return `${y}-${pad(m)}-${pad(day)}`;
-}
-function yesterdayStr() {
-  const { y, m, day } = parisParts();
-  const d = new Date(Date.UTC(y, m - 1, day));
-  d.setUTCDate(d.getUTCDate() - 1);
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
-}
-
 // GET /api/daily/status — état du calendrier mensuel pour le joueur
 router.get("/status", async (req, res) => {
   try {
@@ -75,7 +64,7 @@ router.get("/status", async (req, res) => {
     const daysInMonth = new Date(year, month, 0).getDate();
     const monthPrefix = `${year}-${pad(month)}-`;
 
-    const login = await get(`SELECT streak, last_claim_date, best_streak FROM daily_login WHERE user_id = ?`, [userId]);
+    const login = await get(`SELECT best_streak FROM daily_login WHERE user_id = ?`, [userId]);
     const claims = await all(
       `SELECT claim_date FROM daily_claims WHERE user_id = ? AND claim_date LIKE ?`,
       [userId, monthPrefix + "%"]
@@ -83,10 +72,8 @@ router.get("/status", async (req, res) => {
     const claimedDays = claims.map(c => Number(c.claim_date.slice(8, 10)));
     const canClaim = !claimedDays.includes(today);
 
-    const prospective = !login ? 1
-      : login.last_claim_date === yesterdayStr() ? login.streak + 1
-      : login.last_claim_date === dateStr() ? login.streak
-      : 1;
+    // Compte le nombre de jours réclamés ce mois (peu importe les jours manqués entre-temps)
+    const prospective = canClaim ? claimedDays.length + 1 : claimedDays.length;
     const mult = multiplierFor(prospective);
     const specialDays = specialDaysForMonth(year, month, daysInMonth);
     const todayItem = dailyItemFor(specialDays, today);
@@ -116,6 +103,7 @@ router.post("/claim", async (req, res) => {
     const { y: year, m: month, day: dayOfMonth } = parisParts();
     const today = `${year}-${pad(month)}-${pad(dayOfMonth)}`;
     const daysInMonth = new Date(year, month, 0).getDate();
+    const monthPrefix = `${year}-${pad(month)}-`;
 
     // Verrou atomique : la clé primaire (user_id, claim_date) empêche tout
     // double crédit, même en cas de requêtes concurrentes. On ne crédite QUE
@@ -123,8 +111,12 @@ router.post("/claim", async (req, res) => {
     const claimIns = await run(`INSERT OR IGNORE INTO daily_claims (user_id, claim_date) VALUES (?,?)`, [userId, today]);
     if (claimIns.changes === 0) return res.status(400).json({ error: "Récompense déjà réclamée aujourd'hui" });
 
-    const login = await get(`SELECT streak, last_claim_date, best_streak FROM daily_login WHERE user_id = ?`, [userId]);
-    const newStreak = login && login.last_claim_date === yesterdayStr() ? login.streak + 1 : 1;
+    const login = await get(`SELECT best_streak FROM daily_login WHERE user_id = ?`, [userId]);
+    // Multiplicateur basé sur le nombre de jours réclamés ce mois (les jours manqués entre-temps ne le remettent pas à 1)
+    const { c: newStreak } = await get(
+      `SELECT COUNT(*) AS c FROM daily_claims WHERE user_id = ? AND claim_date LIKE ?`,
+      [userId, monthPrefix + "%"]
+    );
     const best = Math.max(login?.best_streak || 0, newStreak);
     const mult = multiplierFor(newStreak);
     const money = Math.round(baseForDay(dayOfMonth) * mult);

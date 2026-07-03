@@ -898,25 +898,17 @@ function dailyMonthCtx() {
   return { year: y, month: m, today: day, daysInMonth: new Date(y, m, 0).getDate(), prefix: `${y}-${pad(m)}-`, pad };
 }
 
-// Recalcule la série (jours consécutifs se terminant à la dernière date cochée)
-// à partir de daily_claims → met à jour daily_login (donc le multiplicateur).
+// Recalcule le nombre de jours réclamés dans le mois en cours (les jours manqués
+// entre-temps ne remettent pas le multiplicateur à zéro) → met à jour daily_login.
 async function recomputeDailyStreak(userId) {
-  const pad = n => String(n).padStart(2, "0");
-  const rows = await all(`SELECT claim_date FROM daily_claims WHERE user_id = ? ORDER BY claim_date DESC`, [userId]);
+  const ctx = dailyMonthCtx();
+  const rows = await all(
+    `SELECT claim_date FROM daily_claims WHERE user_id = ? AND claim_date LIKE ? ORDER BY claim_date DESC`,
+    [userId, ctx.prefix + "%"]
+  );
   const cur = await get(`SELECT best_streak FROM daily_login WHERE user_id = ?`, [userId]);
-  if (!rows.length) {
-    await run(`INSERT INTO daily_login (user_id, streak, last_claim_date, best_streak) VALUES (?,0,NULL,?)
-               ON CONFLICT(user_id) DO UPDATE SET streak = 0, last_claim_date = NULL`, [userId, cur?.best_streak || 0]);
-    return { streak: 0 };
-  }
-  const set = new Set(rows.map(r => r.claim_date));
-  const last = rows[0].claim_date;
-  let streak = 0;
-  const d = new Date(last + "T00:00:00Z");
-  while (set.has(`${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`)) {
-    streak++;
-    d.setUTCDate(d.getUTCDate() - 1);
-  }
+  const streak = rows.length;
+  const last = rows[0]?.claim_date || null;
   const best = Math.max(cur?.best_streak || 0, streak);
   await run(`INSERT INTO daily_login (user_id, streak, last_claim_date, best_streak) VALUES (?,?,?,?)
              ON CONFLICT(user_id) DO UPDATE SET streak = ?, last_claim_date = ?, best_streak = ?`,
@@ -930,12 +922,12 @@ router.get("/daily/:username", async (req, res) => {
     const u = await get(`SELECT id FROM users WHERE username = ?`, [req.params.username]);
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
     const ctx = dailyMonthCtx();
-    const login = await get(`SELECT streak, last_claim_date, best_streak FROM daily_login WHERE user_id = ?`, [u.id]);
+    const login = await get(`SELECT last_claim_date, best_streak FROM daily_login WHERE user_id = ?`, [u.id]);
     const claims = await all(
       `SELECT claim_date FROM daily_claims WHERE user_id = ? AND claim_date LIKE ?`,
       [u.id, ctx.prefix + "%"]
     );
-    const streak = login?.streak || 0;
+    const streak = claims.length;
     res.json({
       year: ctx.year, month: ctx.month, today: ctx.today, daysInMonth: ctx.daysInMonth,
       claimedDays: claims.map(c => Number(c.claim_date.slice(8, 10))),
@@ -998,10 +990,18 @@ router.post("/daily/:username/streak", async (req, res) => {
   try {
     const u = await get(`SELECT id FROM users WHERE username = ?`, [req.params.username]);
     if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
+    const ctx = dailyMonthCtx();
     let streak = parseInt(req.body.streak, 10);
     if (!Number.isInteger(streak) || streak < 0) streak = 0;
-    streak = Math.min(streak, 9999);
-    const ctx = dailyMonthCtx();
+    streak = Math.min(streak, ctx.today); // ne peut pas dépasser le nombre de jours écoulés ce mois
+
+    // Reconstruit réellement le calendrier : coche les `streak` derniers jours jusqu'à aujourd'hui,
+    // pour que le multiplicateur (basé sur daily_claims) reflète bien la valeur forcée.
+    await run(`DELETE FROM daily_claims WHERE user_id = ? AND claim_date LIKE ?`, [u.id, ctx.prefix + "%"]);
+    for (let i = 0; i < streak; i++) {
+      await run(`INSERT OR IGNORE INTO daily_claims (user_id, claim_date) VALUES (?,?)`, [u.id, ctx.prefix + ctx.pad(ctx.today - i)]);
+    }
+
     const today = ctx.prefix + ctx.pad(ctx.today);
     const cur = await get(`SELECT best_streak FROM daily_login WHERE user_id = ?`, [u.id]);
     const best = Math.max(cur?.best_streak || 0, streak);

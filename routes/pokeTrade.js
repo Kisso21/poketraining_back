@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { run, get, all, GEN3_POKEMONS, GEN4_POKEMONS } from "../db.js";
 import { pushNotification } from "./notifications.js";
+import { emitToUser } from "../socket.js";
 
 // req.user est déjà injecté par verifyToken dans server.js
 const requireAdmin = (req, res, next) => {
@@ -36,6 +37,7 @@ async function expireOldTrades() {
       [t.creator_id, t.pokemon_name, t.is_shiny]
     );
     await run(`UPDATE pokemon_trades SET status = 'expired' WHERE id = ?`, [t.id]);
+    emitToUser(t.creator_id, "sync:pokedex", { userId: t.creator_id, pokemonName: t.pokemon_name, isShiny: t.is_shiny, addedToReserve: true, newAchievements: [] });
   }
 }
 
@@ -46,6 +48,7 @@ async function receivePokemon(userId, pokemonName, isShiny) {
     `SELECT id FROM captures WHERE user_id = ? AND pokemon_name = ? AND is_shiny = ?`,
     [userId, pokemonName, flag]
   );
+  let addedToReserve = false;
   if (!existing) {
     // Nouveau Pokémon → Pokédex
     await run(
@@ -59,7 +62,9 @@ async function receivePokemon(userId, pokemonName, isShiny) {
       `INSERT INTO pokemon_reserve (user_id, pokemon_name, is_shiny) VALUES (?, ?, ?)`,
       [userId, pokemonName, flag]
     );
+    addedToReserve = true;
   }
+  emitToUser(userId, "sync:pokedex", { userId, pokemonName, isShiny: !!flag, addedToReserve, newAchievements: [] });
 }
 
 /* ── GET /api/trade  — offres du marché (hors propres annonces) ─── */
@@ -144,6 +149,7 @@ router.post("/create", async (req, res) => {
       ]
     );
 
+    emitToUser(req.user.id, "sync:pokedex", { userId: req.user.id, pokemonName: entry.pokemon_name, isShiny: entry.is_shiny, addedToReserve: true, newAchievements: [] });
     res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -180,6 +186,8 @@ router.post("/:id/accept", async (req, res) => {
 
       await run(`UPDATE inventory SET pokedollars = pokedollars - ? WHERE user_id = ?`, [trade.price, req.user.id]);
       await run(`UPDATE inventory SET pokedollars = pokedollars + ? WHERE user_id = ?`, [trade.price, trade.creator_id]);
+      emitToUser(req.user.id, "sync:inventory", { userId: req.user.id });
+      emitToUser(trade.creator_id, "sync:inventory", { userId: trade.creator_id });
 
       // L'acheteur reçoit le Pokémon : Pokédex si nouveau, sinon réserve
       await receivePokemon(req.user.id, trade.pokemon_name, trade.is_shiny);
@@ -206,6 +214,7 @@ router.post("/:id/accept", async (req, res) => {
 
       // Retirer le Pokémon proposé par l'accepteur
       await run(`DELETE FROM pokemon_reserve WHERE id = ?`, [matchEntry.id]);
+      emitToUser(req.user.id, "sync:pokedex", { userId: req.user.id, pokemonName: trade.requested_pokemon, isShiny: trade.requested_shiny, addedToReserve: false, newAchievements: [] });
 
       // L'accepteur reçoit le Pokémon du créateur : Pokédex si nouveau, sinon réserve
       await receivePokemon(req.user.id, trade.pokemon_name, trade.is_shiny);
@@ -284,6 +293,7 @@ router.delete("/admin/:id", requireAdmin, async (req, res) => {
        WHERE id = ?`,
       [reason ?? "Supprimée par un administrateur", tradeId]
     );
+    emitToUser(trade.creator_id, "sync:pokedex", { userId: trade.creator_id, pokemonName: trade.pokemon_name, isShiny: trade.is_shiny, addedToReserve: true, newAchievements: [] });
     res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -311,6 +321,7 @@ router.delete("/:id", async (req, res) => {
       [tradeId]
     );
 
+    emitToUser(req.user.id, "sync:pokedex", { userId: req.user.id, pokemonName: trade.pokemon_name, isShiny: trade.is_shiny, addedToReserve: true, newAchievements: [] });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
