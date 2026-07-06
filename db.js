@@ -291,6 +291,8 @@ export async function initDB() {
     FOREIGN KEY(user_id) REFERENCES users(id),
     UNIQUE(user_id, achievement_id)
   )`);
+  // Horodatage du déverrouillage (ajout rétrocompatible — NULL pour les succès déjà débloqués avant migration)
+  try { await dbRun(`ALTER TABLE achievements ADD COLUMN unlocked_at TIMESTAMP`); } catch {}
 
   // Passifs — user_id au lieu de username
   await dbRun(`CREATE TABLE IF NOT EXISTS user_passives (

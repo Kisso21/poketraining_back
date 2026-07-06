@@ -136,8 +136,8 @@ router.post("/bet", verifyToken, async (req, res) => {
   const username = req.user.username;
   const amount   = parseInt(req.body.amount, 10);
 
-  if (!amount || amount < 10 || amount > 500_000)
-    return res.status(400).json({ error: "Mise invalide (10–500 000₽)" });
+  if (!amount || amount < 10 || amount > 10_000)
+    return res.status(400).json({ error: "Mise invalide (10–10 000₽)" });
   if (game.phase !== "waiting")
     return res.status(400).json({ error: "Les mises sont fermées" });
   if (game.bets[userId])

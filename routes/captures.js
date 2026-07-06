@@ -2,11 +2,45 @@ import { Router } from "express";
 import { run, get, all, GEN1_POKEMONS, GEN2_POKEMONS, GEN3_POKEMONS, GEN4_POKEMONS } from "../db.js";
 import { checkAchievements } from "./achievements.js";
 import { awardBountyIfMatch } from "./bounty.js";
+import { getPokemonCategory, computeCaptureBreakdown, computeBadgeCaptureBonus } from "../captureRates.js";
 import { getIO } from "../socket.js";
 
 const router = Router();
 const CAPTURABLE_SET = new Set([...GEN1_POKEMONS, ...GEN2_POKEMONS, ...GEN3_POKEMONS, ...GEN4_POKEMONS, "MissingNo"]);
 const GEN34_SET = new Set([...GEN3_POKEMONS, ...GEN4_POKEMONS]);
+const VALID_BALLS = ["pokeball", "superball", "hyperball", "masterball"];
+
+// Enregistre une capture réussie : pokédex, ou réserve revendable si doublon.
+// Gère le Charme Éclair (shiny armé), consomme le state et déclenche les succès.
+// Renvoie { addedToReserve, isShiny, newAchievements, message } — logique partagée
+// entre POST /capture (legacy) et POST /capture/throw (taux autoritaire serveur).
+async function persistCapture(userId, pokemonName, isShiny, captureState) {
+  const armed = await get(`SELECT armed_shiny FROM inventory WHERE user_id = ?`, [userId]);
+  if (Number(armed?.armed_shiny) === 1) {
+    isShiny = 1;
+    await run(`UPDATE inventory SET armed_shiny = 0 WHERE user_id = ?`, [userId]);
+    getIO()?.emit("sync:armed", { userId, armedShiny: 0 });
+  }
+
+  const result = await run(
+    `INSERT OR IGNORE INTO captures (user_id, pokemon_name, is_shiny) VALUES (?,?,?)`,
+    [userId, pokemonName, isShiny]
+  );
+  await consumeCaptureState(captureState);
+
+  if (result.changes === 0) {
+    await run(
+      `INSERT INTO pokemon_reserve (user_id, pokemon_name, is_shiny) VALUES (?,?,?)`,
+      [userId, pokemonName, isShiny]
+    );
+    getIO()?.emit("sync:pokedex", { userId, pokemonName, isShiny, addedToReserve: true, newAchievements: [] });
+    return { addedToReserve: true, isShiny, newAchievements: [], message: pokemonName + " ajouté à ta réserve !" };
+  }
+
+  const newAchievements = await checkAchievements(userId).catch(() => []);
+  getIO()?.emit("sync:pokedex", { userId, pokemonName, isShiny, addedToReserve: false, newAchievements });
+  return { addedToReserve: false, isShiny, newAchievements, message: pokemonName + " capturé !" };
+}
 
 function stateMatchesCapture(rawState, pokemonName) {
   if (!rawState) return false;
@@ -77,33 +111,115 @@ router.post("/capture", async (req, res) => {
     const captureState = await getCaptureState(userId, pokemonName);
     if (!captureState) return res.status(403).json({ error: "Capture non autorisée pour cette partie" });
 
-    // ── Charme Éclair : si un shiny est armé, on force is_shiny et on le consomme ──
-    const armed = await get(`SELECT armed_shiny FROM inventory WHERE user_id = ?`, [userId]);
-    if (Number(armed?.armed_shiny) === 1) {
-      isShiny = 1;
-      await run(`UPDATE inventory SET armed_shiny = 0 WHERE user_id = ?`, [userId]);
-      getIO()?.emit("sync:armed", { userId, armedShiny: 0 });
-    }
+    const cap = await persistCapture(userId, pokemonName, isShiny, captureState);
+    res.json({
+      success: true,
+      addedToReserve: cap.addedToReserve,
+      message: cap.message,
+      isShiny: cap.isShiny,
+      newAchievements: cap.newAchievements,
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
 
-    const result = await run(
-      `INSERT OR IGNORE INTO captures (user_id, pokemon_name, is_shiny) VALUES (?,?,?)`,
-      [userId, pokemonName, isShiny]
-    );
-    await consumeCaptureState(captureState);
+// POST /api/capture/throw
+// Lancer de balle AUTORITAIRE : le serveur décrémente la balle, calcule le taux
+// (catégorie, stat Dresseur, appâts, badges, malus doublon) et TIRE le succès.
+// Le client n'envoie plus « willSucceed » — il ne peut donc plus forcer la capture.
+router.post("/capture/throw", async (req, res) => {
+  const userId   = req.user.id;
+  const username = req.user.username;
+  let { pokemonName, ballType } = req.body;
+  let isShiny = req.body.isShiny ? 1 : 0;
+  let score   = Number(req.body.score);
+  if (!Number.isFinite(score)) score = 0;
+  score = Math.max(0, Math.min(100, Math.round(score))); // borne comme /game/reset
 
-    if (result.changes === 0) {
-      // Doublon → ajout en réserve revendable
-      await run(
-        `INSERT INTO pokemon_reserve (user_id, pokemon_name, is_shiny) VALUES (?,?,?)`,
-        [userId, pokemonName, isShiny]
+  if (!pokemonName || !ballType) return res.status(400).json({ error: "Données manquantes" });
+  pokemonName = String(pokemonName).trim();
+  if (!CAPTURABLE_SET.has(pokemonName)) return res.status(400).json({ error: "Pokémon invalide" });
+  if (!VALID_BALLS.includes(ballType)) return res.status(400).json({ error: "Type de Pokéball invalide" });
+
+  try {
+    if (GEN34_SET.has(pokemonName)) {
+      const ach = await get(
+        `SELECT claimed FROM achievements WHERE user_id = ? AND achievement_id = 'unlock-gen3-4'`,
+        [userId]
       );
-      getIO()?.emit("sync:pokedex", { userId, pokemonName, isShiny, addedToReserve: true, newAchievements: [] });
-      return res.json({ success: true, addedToReserve: true, message: pokemonName + " ajouté à ta réserve !", isShiny });
+      if (!ach || !Number(ach.claimed)) {
+        return res.status(403).json({ error: "Générations 3 & 4 non débloquées" });
+      }
     }
 
-    const newAchievements = await checkAchievements(userId).catch(() => []);
-    getIO()?.emit("sync:pokedex", { userId, pokemonName, isShiny, addedToReserve: false, newAchievements });
-    res.json({ success: true, addedToReserve: false, message: pokemonName + " capturé !", isShiny, newAchievements });
+    // Autorisation : une partie terminée correspondant à ce Pokémon, non consommée.
+    const captureState = await getCaptureState(userId, pokemonName);
+    if (!captureState) return res.status(403).json({ error: "Capture non autorisée pour cette partie" });
+
+    // Balle disponible ? décrément atomique (colonne sécurisée par la whitelist).
+    const inv = await get(`SELECT ${ballType} AS n FROM inventory WHERE user_id = ?`, [userId]);
+    if ((inv?.n || 0) <= 0) return res.status(400).json({ error: "Plus de balles !" });
+    await run(`UPDATE inventory SET ${ballType} = ${ballType} - 1 WHERE user_id = ?`, [userId]);
+    const fullInv = await get(`SELECT * FROM inventory WHERE user_id = ?`, [userId]);
+    getIO()?.emit("sync:inventory", { userId, inventory: fullInv });
+
+    // ── Calcul du taux, entièrement côté serveur ──
+    const category = getPokemonCategory(pokemonName);
+
+    const ts            = await get(`SELECT stat_dresseur FROM trainer_stats WHERE user_id = ?`, [userId]);
+    const dresseurBonus = Math.round((ts?.stat_dresseur || 0) * 0.1);
+
+    const passRows  = await all(
+      `SELECT item FROM user_passives WHERE user_id = ? AND active = 1 AND item IN ('appat','superappat')`,
+      [userId]
+    );
+    const activeSet = new Set(passRows.map(p => p.item));
+    const appAtBonus = (activeSet.has("appat") ? 3 : 0) + (activeSet.has("superappat") ? 5 : 0);
+
+    const areneRows  = await all(`SELECT arene FROM user_arenes WHERE username = ? AND defeated = 1`, [username]);
+    const badgeRows  = await all(`SELECT badge FROM user_badges WHERE user_id = ? AND unlocked = 1`, [userId]);
+    const badgeCaptureBonus = computeBadgeCaptureBonus(areneRows.map(r => r.arene), badgeRows.map(b => b.badge));
+
+    const scoreBonus = Math.floor(score / 10);
+
+    // Malus doublon : légendaire/mythique normal déjà possédé → taux ÷2.
+    let dupRarePenalty = false;
+    if ((category === "legendaire" || category === "mythic") && !isShiny) {
+      const owns = await get(
+        `SELECT 1 AS x FROM captures WHERE user_id = ? AND pokemon_name = ? AND is_shiny = 0`,
+        [userId, pokemonName]
+      );
+      dupRarePenalty = !!owns;
+    }
+
+    const br   = computeCaptureBreakdown(category, ballType, {
+      scoreBonus, dresseurBonus, appAtBonus, badgeCaptureBonus, dupRarePenalty,
+    });
+    const roll   = Math.random() * 100;
+    const caught = roll < br.rate;
+
+    // Mode debug : détail complet du calcul + tirage, réservé aux comptes admin.
+    const debug = req.user.role === "admin"
+      ? { ...br, roll: +roll.toFixed(4), caught }
+      : undefined;
+
+    if (!caught) {
+      return res.json({ success: true, caught: false, rate: br.rate, debug, inventory: fullInv });
+    }
+
+    const cap = await persistCapture(userId, pokemonName, isShiny, captureState);
+    res.json({
+      success: true,
+      caught: true,
+      rate: br.rate,
+      debug,
+      addedToReserve: cap.addedToReserve,
+      isShiny: cap.isShiny,
+      newAchievements: cap.newAchievements,
+      message: cap.message,
+      inventory: fullInv,
+    });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }

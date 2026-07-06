@@ -71,7 +71,11 @@ router.get("/:userId", async (req, res) => {
     const cap          = maxLevelFor(await isGen34Unlocked(req.user.id));
     const currentLevel = computeLevel(ts.xp || 0, cap);
     if (currentLevel !== ts.level) {
-      await run(`UPDATE trainer_stats SET level = ? WHERE user_id = ?`, [currentLevel, req.user.id]);
+      const pointsToAdd = currentLevel > ts.level ? (currentLevel - ts.level) * POINTS_PER_LEVEL : 0;
+      await run(
+        `UPDATE trainer_stats SET level = ?, stat_points_available = stat_points_available + ? WHERE user_id = ?`,
+        [currentLevel, pointsToAdd, req.user.id]
+      );
     }
     const xpForCurrent = XP_THRESHOLDS[currentLevel - 1] || 0;
     const xpForNext    = currentLevel < cap ? XP_THRESHOLDS[currentLevel] : null;

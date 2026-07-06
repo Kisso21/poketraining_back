@@ -347,6 +347,7 @@ const REWARDS = {
   "g4-count-50": 1000,
   "g4-count-75": 1500,
   "g4-count-full": 10000,
+  "pokedex-normal-493": 200000,
   "g4-shiny-starters": 5000,
   "g4-shiny-lucario": 2000,
   "g4-shiny-carchacrok": 2000,
@@ -702,6 +703,7 @@ const ITEM_REWARDS = {
   "g4-count-50": { hyperball: 2, superbonbon: 1 },
   "g4-count-75": { lootbox: 1, hyperball: 2 },
   "g4-count-full": { goldappat: 1, lootbox: 2, ticketsafari: 1 },
+  "pokedex-normal-493": { lootbox: 10, goldappat: 5, charmeeclaire: 5 },
   "g4-shiny-starters": { lootbox: 1, superbonbon: 1 },
   "g4-shiny-lucario": { lootbox: 1, superbonbon: 1 },
   "g4-shiny-carchacrok": { lootbox: 1, superbonbon: 1 },
@@ -1363,6 +1365,7 @@ const POKEDEX_REQS = {
   "g4-count-50": { biomeCount: { count: 50, names: GEN4_POKEMONS } },
   "g4-count-75": { biomeCount: { count: 75, names: GEN4_POKEMONS } },
   "g4-count-full": { biomeCount: { count: 107, names: GEN4_POKEMONS } },
+  "pokedex-normal-493": { normalAll: [...GEN1_POKEMONS, ...GEN2_NAMES, ...GEN3_POKEMONS, ...GEN4_POKEMONS] },
   "g4-shiny-starters": { shinyAll: ["Torterra", "Simiabraz", "Pingoléon"] },
   "g4-shiny-lucario": { shinyAll: ["Lucario"] },
   "g4-shiny-carchacrok": { shinyAll: ["Carchacrok"] },
@@ -1531,8 +1534,8 @@ export async function checkAchievements(userId) {
 
   for (const id of unique) {
     await run(
-      `INSERT INTO achievements (user_id, achievement_id, unlocked, claimed) VALUES (?,?,1,0)
-       ON CONFLICT(user_id, achievement_id) DO UPDATE SET unlocked = 1`,
+      `INSERT INTO achievements (user_id, achievement_id, unlocked, claimed, unlocked_at) VALUES (?,?,1,0,CURRENT_TIMESTAMP)
+       ON CONFLICT(user_id, achievement_id) DO UPDATE SET unlocked = 1, unlocked_at = COALESCE(unlocked_at, CURRENT_TIMESTAMP)`,
       [userId, id]
     );
   }
@@ -1544,12 +1547,115 @@ export async function checkAchievements(userId) {
 export async function checkCasinoUnlock(userId, balance) {
   if (balance < 20000) return;
   await run(
-    `INSERT INTO achievements (user_id, achievement_id, unlocked, claimed)
-     VALUES (?, 'unlock-casino', 1, 0)
-     ON CONFLICT(user_id, achievement_id) DO UPDATE SET unlocked = 1`,
+    `INSERT INTO achievements (user_id, achievement_id, unlocked, claimed, unlocked_at)
+     VALUES (?, 'unlock-casino', 1, 0, CURRENT_TIMESTAMP)
+     ON CONFLICT(user_id, achievement_id) DO UPDATE SET unlocked = 1, unlocked_at = COALESCE(unlocked_at, CURRENT_TIMESTAMP)`,
     [userId]
   );
 }
+
+// GET /api/achievements/pokedex-national-summary
+// Données personnalisées pour la cinématique de fin (succès pokedex-normal-493) :
+// premier Pokémon jamais capturé, celui qui a complété le dex national, stats globales.
+// IMPORTANT : doit rester déclarée AVANT "/:userId" ci-dessous, sinon Express la
+// fait matcher comme userId="pokedex-national-summary" et cette route n'est jamais atteinte.
+router.get("/pokedex-national-summary", async (req, res) => {
+  try {
+    let userId = req.user.id;
+    // Un admin peut prévisualiser avec les données d'un autre joueur (?asUser=pseudo)
+    if (req.query.asUser && req.user.role === "admin") {
+      const target = await get(`SELECT id FROM users WHERE username = ?`, [req.query.asUser]);
+      if (target) userId = target.id;
+    }
+    const gen12Set = new Set([...GEN1_POKEMONS, ...GEN2_NAMES]);
+    const gen34Set = new Set([...GEN3_POKEMONS, ...GEN4_POKEMONS]);
+    const required = new Set([...gen12Set, ...gen34Set]);
+
+    const allCaptures = await all(
+      `SELECT pokemon_name, is_shiny, captured_at FROM captures WHERE user_id = ? ORDER BY captured_at ASC`,
+      [userId]
+    );
+    const normalDexCaptures = allCaptures.filter(c => c.is_shiny === 0 && required.has(c.pokemon_name));
+    const gen12Completion = normalDexCaptures.filter(c => gen12Set.has(c.pokemon_name));
+    const gen34Completion = normalDexCaptures.filter(c => gen34Set.has(c.pokemon_name));
+    const firstCaptureGen12 = allCaptures.find(c => gen12Set.has(c.pokemon_name)) ?? null;
+    const firstCaptureGen34 = allCaptures.find(c => gen34Set.has(c.pokemon_name)) ?? null;
+    const shinyNames = new Set(allCaptures.filter(c => c.is_shiny === 1).map(c => c.pokemon_name));
+
+    const seenRows = await all(`SELECT pokemon_name, seen_count FROM pokemon_seen WHERE user_id = ?`, [userId]);
+    const mostSeenIn = (set) => seenRows.filter(r => set.has(r.pokemon_name)).sort((a, b) => b.seen_count - a.seen_count)[0] ?? null;
+    const leastSeenIn = (set) => seenRows.filter(r => set.has(r.pokemon_name)).sort((a, b) => a.seen_count - b.seen_count)[0] ?? null;
+    const mostSeenGen12 = mostSeenIn(gen12Set);
+    const mostSeenGen34 = mostSeenIn(gen34Set);
+    const leastSeenGen12 = leastSeenIn(gen12Set);
+    const leastSeenGen34 = leastSeenIn(gen34Set);
+
+    const missingNoCapture = await get(
+      `SELECT captured_at FROM captures WHERE user_id = ? AND pokemon_name = 'MissingNo' ORDER BY captured_at ASC LIMIT 1`,
+      [userId]
+    );
+
+    const user = await get(`SELECT username, created_at, avatar FROM users WHERE id = ?`, [userId]);
+    const stats = await get(
+      `SELECT level, stat_dresseur, stat_collectionneur, stat_tresorier, stat_legende FROM trainer_stats WHERE user_id = ?`,
+      [userId]
+    );
+    const firstBadge = await get(
+      `SELECT badge, date_obtained FROM user_badges WHERE user_id = ? AND unlocked = 1 ORDER BY date_obtained ASC LIMIT 1`,
+      [userId]
+    );
+    const login = await get(`SELECT best_streak FROM daily_login WHERE user_id = ?`, [userId]);
+    const claimedRows = await all(`SELECT achievement_id, unlocked_at FROM achievements WHERE user_id = ? AND claimed = 1`, [userId]);
+    const claimedIds = claimedRows.map(r => r.achievement_id);
+
+    let rewardsPokedollars = 0;
+    const rewardsItems = {};
+    for (const id of claimedIds) {
+      rewardsPokedollars += REWARDS[id] || 0;
+      const items = ITEM_REWARDS[id];
+      if (items) for (const [item, qty] of Object.entries(items)) rewardsItems[item] = (rewardsItems[item] || 0) + qty;
+    }
+
+    const hardestAchievements = claimedRows
+      .map(r => ({ id: r.achievement_id, unlockedAt: r.unlocked_at, difficulty: REWARDS[r.achievement_id] || 0 }))
+      .sort((a, b) => b.difficulty - a.difficulty)
+      .slice(0, 5);
+
+    res.json({
+      username: user?.username ?? null,
+      avatar: user?.avatar ?? null,
+      level: stats?.level ?? 1,
+      trainerStats: {
+        dresseur: stats?.stat_dresseur ?? 0,
+        collectionneur: stats?.stat_collectionneur ?? 0,
+        tresorier: stats?.stat_tresorier ?? 0,
+        legende: stats?.stat_legende ?? 0,
+      },
+      accountCreatedAt: user?.created_at ?? null,
+      firstCapture: allCaptures[0] ?? null,
+      finalCapture: normalDexCaptures.length ? normalDexCaptures[normalDexCaptures.length - 1] : null,
+      totalCaptures: allCaptures.length,
+      totalShiny: allCaptures.filter(c => c.is_shiny === 1).length,
+      firstBadge: firstBadge ?? null,
+      bestLoginStreak: login?.best_streak ?? 0,
+      mostSeenGen12: mostSeenGen12 ? { name: mostSeenGen12.pokemon_name, count: mostSeenGen12.seen_count } : null,
+      mostSeenGen34: mostSeenGen34 ? { name: mostSeenGen34.pokemon_name, count: mostSeenGen34.seen_count } : null,
+      leastSeenGen12: leastSeenGen12 ? { name: leastSeenGen12.pokemon_name, count: leastSeenGen12.seen_count } : null,
+      leastSeenGen34: leastSeenGen34 ? { name: leastSeenGen34.pokemon_name, count: leastSeenGen34.seen_count } : null,
+      firstCaptureGen12: firstCaptureGen12 ?? null,
+      firstCaptureGen34: firstCaptureGen34 ?? null,
+      missingNoCapturedAt: missingNoCapture?.captured_at ?? null,
+      gen12Completion: gen12Completion.length ? gen12Completion[gen12Completion.length - 1] : null,
+      gen34Completion: gen34Completion.length ? gen34Completion[gen34Completion.length - 1] : null,
+      achievementsClaimed: claimedIds.length,
+      hardestAchievements,
+      rewardsSummary: { pokedollars: rewardsPokedollars, items: rewardsItems },
+      chronological: normalDexCaptures.map(c => ({ name: c.pokemon_name, capturedAt: c.captured_at, alsoShiny: shinyNames.has(c.pokemon_name) })),
+    });
+  } catch {
+    res.status(500).json({ error: "Erreur DB" });
+  }
+});
 
 // GET /api/achievements/:userId
 router.get("/:userId", async (req, res) => {
@@ -1572,8 +1678,8 @@ router.post("/unlock", async (req, res) => {
   if (!VALID_ACHIEVEMENT_IDS.has(achievementId)) return res.status(400).json({ error: "Succès invalide" });
   try {
     await run(
-      `INSERT INTO achievements (user_id, achievement_id, unlocked, claimed) VALUES (?,?,1,0)
-       ON CONFLICT(user_id, achievement_id) DO UPDATE SET unlocked = 1`,
+      `INSERT INTO achievements (user_id, achievement_id, unlocked, claimed, unlocked_at) VALUES (?,?,1,0,CURRENT_TIMESTAMP)
+       ON CONFLICT(user_id, achievement_id) DO UPDATE SET unlocked = 1, unlocked_at = COALESCE(unlocked_at, CURRENT_TIMESTAMP)`,
       [userId, achievementId]
     );
     res.json({ success: true });
