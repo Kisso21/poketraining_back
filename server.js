@@ -7,6 +7,7 @@ import { createServer }    from "http";
 import { Server as SocketIO } from "socket.io";
 import { transporter }       from "./mailer.js";
 import https                 from "https";
+import { createReadStream, existsSync } from "fs";
 
 import { initDB, get, run } from "./db.js";
 import { setIO }       from "./socket.js";
@@ -141,17 +142,25 @@ app.get("/api/leaderboard", async (req, res) => {
   } catch { res.status(500).json({ error: "Erreur serveur" }); }
 });
 
+// Cris Pokémon hébergés en local (plus aucun appel à raw.githubusercontent.com).
+// Le jeu « Cri » exige un STREAM du fichier (pas une redirection : une redirection
+// vers /cries/.../<id>.ogg révélerait l'id du Pokémon secret).
+const CRIES_DIR = "/var/www/html/cries/pokemon/latest";
+function streamLocalCry(res, pokeId, cacheControl) {
+  const file = `${CRIES_DIR}/${pokeId}.ogg`;
+  if (!existsSync(file)) return res.status(404).json({ error: "Cri indisponible" });
+  res.setHeader("Content-Type", "audio/ogg");
+  res.setHeader("Cache-Control", cacheControl);
+  createReadStream(file)
+    .on("error", () => { if (!res.headersSent) res.status(500).end(); })
+    .pipe(res);
+}
+
 // Cry par ID direct (Pokédex) — public, pas de game state requis
 app.get("/api/cry/pokemon/:pokeId", (req, res) => {
   const pokeId = parseInt(req.params.pokeId, 10);
   if (!pokeId || pokeId < 1 || pokeId > 898) return res.status(400).json({ error: "ID invalide" });
-  const url = `https://raw.githubusercontent.com/PokeAPI/cries/main/cries/pokemon/latest/${pokeId}.ogg`;
-  https.get(url, (upstream) => {
-    if (upstream.statusCode !== 200) return res.status(502).json({ error: "Cri indisponible" });
-    res.setHeader("Content-Type", "audio/ogg");
-    res.setHeader("Cache-Control", "public, max-age=86400");
-    upstream.pipe(res);
-  }).on("error", () => res.status(502).json({ error: "Erreur réseau" }));
+  streamLocalCry(res, pokeId, "public, max-age=86400");
 });
 
 // Cry : public (new Audio() ne peut pas envoyer de header Authorization)
@@ -164,13 +173,7 @@ app.get("/api/cry/:userId/:gameType", optionalToken, async (req, res) => {
     const state = JSON.parse(row.state || "{}");
     const pokeId = FR_TO_CRY_ID[state.secret];
     if (!pokeId) return res.status(404).json({ error: "Cri non disponible" });
-    const url = `https://raw.githubusercontent.com/PokeAPI/cries/main/cries/pokemon/latest/${pokeId}.ogg`;
-    https.get(url, (upstream) => {
-      if (upstream.statusCode !== 200) return res.status(502).json({ error: "Cri indisponible" });
-      res.setHeader("Content-Type", "audio/ogg");
-      res.setHeader("Cache-Control", "no-store");
-      upstream.pipe(res);
-    }).on("error", () => res.status(502).json({ error: "Erreur réseau" }));
+    streamLocalCry(res, pokeId, "no-store");
   } catch {
     res.status(500).json({ error: "Erreur serveur" });
   }

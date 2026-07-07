@@ -2,7 +2,7 @@ import { Router } from "express";
 import { run, get } from "../db.js";
 import { getIO } from "../socket.js";
 import https from "https";
-import { readFileSync } from "fs";
+import { readFileSync, createReadStream, existsSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 
@@ -257,13 +257,14 @@ router.get("/cry/:userId/:gameType", async (req, res) => {
     // Priorité à l'id sauvegardé (toutes générations) ; fallback sur le mapping gen 1-2.
     const id = state.secretId || FR_TO_CRY_ID[pokemonName];
     if (!id) return res.status(404).json({ error: "Cri non disponible" });
-    const url = `https://raw.githubusercontent.com/PokeAPI/cries/main/cries/pokemon/latest/${id}.ogg`;
-    https.get(url, (upstream) => {
-      if (upstream.statusCode !== 200) return res.status(502).json({ error: "Cri indisponible" });
-      res.setHeader("Content-Type", "audio/ogg");
-      res.setHeader("Cache-Control", "no-store");
-      upstream.pipe(res);
-    }).on("error", () => res.status(502).json({ error: "Erreur réseau" }));
+    // Stream du fichier local (pas de redirection : l'id du secret ne doit pas fuiter).
+    const file = `/var/www/html/cries/pokemon/latest/${id}.ogg`;
+    if (!existsSync(file)) return res.status(404).json({ error: "Cri indisponible" });
+    res.setHeader("Content-Type", "audio/ogg");
+    res.setHeader("Cache-Control", "no-store");
+    createReadStream(file)
+      .on("error", () => { if (!res.headersSent) res.status(500).end(); })
+      .pipe(res);
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });
   }
