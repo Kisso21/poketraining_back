@@ -1554,6 +1554,42 @@ export async function checkCasinoUnlock(userId, balance) {
   );
 }
 
+// Badge → dresseur vaincu + région (miroir de ARENE_CONFIG, dupliqué ici pour éviter
+// un import circulaire avec routes/arenes.js qui importe déjà achievements.js).
+const BADGE_META = {
+  "Badge Roche":     { trainer: "Pierre",        region: "Kanto"  },
+  "Badge Cascade":   { trainer: "Ondine",        region: "Kanto"  },
+  "Badge Foudre":    { trainer: "Major Bob",     region: "Kanto"  },
+  "Badge Prisme":    { trainer: "Erika",         region: "Kanto"  },
+  "Badge Âme":       { trainer: "Koga",          region: "Kanto"  },
+  "Badge Marais":    { trainer: "Morgane",       region: "Kanto"  },
+  "Badge Volcan":    { trainer: "Auguste",       region: "Kanto"  },
+  "Badge Zéphyr":    { trainer: "Albert",        region: "Johto"  },
+  "Badge Essaim":    { trainer: "Hector",        region: "Johto"  },
+  "Badge Plaine":    { trainer: "Blanche",       region: "Johto"  },
+  "Badge Brume":     { trainer: "Mortimer",      region: "Johto"  },
+  "Badge Choc":      { trainer: "Chuck",         region: "Johto"  },
+  "Badge Minéral":   { trainer: "Jasmine",       region: "Johto"  },
+  "Badge Glacier":   { trainer: "Fredo",         region: "Johto"  },
+  "Badge Lever":     { trainer: "Sandra",        region: "Johto"  },
+  "Badge Caillou":   { trainer: "Roxanne",       region: "Hoenn"  },
+  "Badge Genou":     { trainer: "Bastien",       region: "Hoenn"  },
+  "Badge Dynamo":    { trainer: "Voltère",       region: "Hoenn"  },
+  "Badge Chaleur":   { trainer: "Adriane",       region: "Hoenn"  },
+  "Badge Équilibre": { trainer: "Norman",        region: "Hoenn"  },
+  "Badge Plume":     { trainer: "Alizée",        region: "Hoenn"  },
+  "Badge Esprit":    { trainer: "Lévy & Tatia",  region: "Hoenn"  },
+  "Badge Pluie":     { trainer: "Marc",          region: "Hoenn"  },
+  "Badge Charbon":   { trainer: "Pierrick",      region: "Sinnoh" },
+  "Badge Forêt":     { trainer: "Flo",           region: "Sinnoh" },
+  "Badge Cobalt":    { trainer: "Mélina",        region: "Sinnoh" },
+  "Badge Palustre":  { trainer: "Lovis",         region: "Sinnoh" },
+  "Badge Fantôme":   { trainer: "Kiméra",        region: "Sinnoh" },
+  "Badge Mine":      { trainer: "Charles",       region: "Sinnoh" },
+  "Badge Glace":     { trainer: "Gladys",        region: "Sinnoh" },
+  "Badge Phare":     { trainer: "Tanguy",        region: "Sinnoh" },
+};
+
 // GET /api/achievements/pokedex-national-summary
 // Données personnalisées pour la cinématique de fin (succès pokedex-normal-493) :
 // premier Pokémon jamais capturé, celui qui a complété le dex national, stats globales.
@@ -1604,6 +1640,17 @@ router.get("/pokedex-national-summary", async (req, res) => {
       `SELECT badge, date_obtained FROM user_badges WHERE user_id = ? AND unlocked = 1 ORDER BY date_obtained ASC LIMIT 1`,
       [userId]
     );
+    // Tous les badges obtenus (image côté front) + dresseur vaincu + date, pour le défilé final.
+    const badgeRows = await all(
+      `SELECT badge, date_obtained FROM user_badges WHERE user_id = ? AND unlocked = 1 ORDER BY date_obtained ASC`,
+      [userId]
+    );
+    const badges = badgeRows.map(b => ({
+      badge: b.badge,
+      date_obtained: b.date_obtained,
+      trainer: BADGE_META[b.badge]?.trainer ?? null,
+      region:  BADGE_META[b.badge]?.region ?? null,
+    }));
     const login = await get(`SELECT best_streak FROM daily_login WHERE user_id = ?`, [userId]);
     const claimedRows = await all(`SELECT achievement_id, unlocked_at FROM achievements WHERE user_id = ? AND claimed = 1`, [userId]);
     const claimedIds = claimedRows.map(r => r.achievement_id);
@@ -1637,6 +1684,7 @@ router.get("/pokedex-national-summary", async (req, res) => {
       totalCaptures: allCaptures.length,
       totalShiny: allCaptures.filter(c => c.is_shiny === 1).length,
       firstBadge: firstBadge ?? null,
+      badges,
       bestLoginStreak: login?.best_streak ?? 0,
       mostSeenGen12: mostSeenGen12 ? { name: mostSeenGen12.pokemon_name, count: mostSeenGen12.seen_count } : null,
       mostSeenGen34: mostSeenGen34 ? { name: mostSeenGen34.pokemon_name, count: mostSeenGen34.seen_count } : null,
