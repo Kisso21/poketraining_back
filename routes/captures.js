@@ -3,7 +3,7 @@ import { run, get, all, GEN1_POKEMONS, GEN2_POKEMONS, GEN3_POKEMONS, GEN4_POKEMO
 import { checkAchievements } from "./achievements.js";
 import { awardBountyIfMatch } from "./bounty.js";
 import { getPokemonCategory, computeCaptureBreakdown, computeBadgeCaptureBonus } from "../captureRates.js";
-import { getIO } from "../socket.js";
+import { getIO, emitToUser } from "../socket.js";
 
 const router = Router();
 const CAPTURABLE_SET = new Set([...GEN1_POKEMONS, ...GEN2_POKEMONS, ...GEN3_POKEMONS, ...GEN4_POKEMONS, "MissingNo"]);
@@ -241,6 +241,9 @@ router.post("/pokedex/seen", async (req, res) => {
     );
     // Prime versée dès la rencontre (normal = prime, shiny = ×2), 1×/cycle/joueur
     const bounty = await awardBountyIfMatch(req.user.id, pokemonName, isShiny);
+    // Rafraîchit le Pokédex ouvert (surtout la miniature pendant le jeu) → le
+    // Pokémon vu apparaît aussitôt comme « Vu » avec ses types et stats.
+    emitToUser(req.user.id, "sync:pokedex", { userId: req.user.id, seen: true, pokemonName });
     res.json({ success: true, bounty });
   } catch (err) {
     res.status(500).json({ error: "Erreur serveur" });

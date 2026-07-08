@@ -32,6 +32,7 @@ const REWARDS = {
   "unlock-poketrade":      300,
   "unlock-arene":          400,
   "unlock-versus":         500,
+  "unlock-elevage":        400,
   // Safari biomes
   "safari-foret":          300,
   "safari-ocean":          300,
@@ -399,6 +400,7 @@ const ITEM_REWARDS = {
   "unlock-poketrade":      { lootbox: 1 },
   "unlock-arene":          { lootbox: 1 },
   "unlock-versus":         { lootbox: 1 },
+  "unlock-elevage":        { lootbox: 1 },
   // Safari biomes
   "safari-foret":          { pokeball: 2 },
   "safari-ocean":          { resetball: 1 },
@@ -1470,6 +1472,9 @@ export async function checkAchievements(userId) {
     // PokéArène : 6 Pokémon différents dans le Pokédex
     if (!unlockedSet.has("unlock-arene") && capturedAny.size >= 6) toUnlock.push("unlock-arene");
 
+    // PokéÉlevage : 25 Pokémon différents dans le Pokédex
+    if (!unlockedSet.has("unlock-elevage") && capturedAny.size >= 25) toUnlock.push("unlock-elevage");
+
     // PokéVersus : Badge Roche + Badge Cascade obtenus
     if (!unlockedSet.has("unlock-versus")) {
       const badgeRow = await get(
@@ -1510,6 +1515,10 @@ export async function checkAchievements(userId) {
     if (!unlockedSet.has("unlock-arene")) {
       const capRow = await get(`SELECT COUNT(DISTINCT pokemon_name) as cnt FROM captures WHERE user_id = ?`, [userId]);
       if ((capRow?.cnt || 0) >= 6) toUnlock.push("unlock-arene");
+    }
+    if (!unlockedSet.has("unlock-elevage")) {
+      const capRow = await get(`SELECT COUNT(DISTINCT pokemon_name) as cnt FROM captures WHERE user_id = ?`, [userId]);
+      if ((capRow?.cnt || 0) >= 25) toUnlock.push("unlock-elevage");
     }
     if (!unlockedSet.has("unlock-versus")) {
       const badgeRow = await get(

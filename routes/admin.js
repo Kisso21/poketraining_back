@@ -10,6 +10,8 @@ import { broadcastRocket } from "./teamRocket.js";
 import { VALID_ITEMS } from "./events.js";
 import { LOOT_TABLE, SHOP_ITEM_KEYS } from "./inventory.js";
 import { parisParts, multiplierFor, lootboxFor, baseForDay, BASE_START, BASE_STEP, specialDaysForMonth } from "./dailyLogin.js";
+import { performHatch, loadPool, gen34Unlocked, topCandidates, aggregateFeed } from "../lib/eggHatch.js";
+import { ALL_BERRIES, TYPE_BERRIES, STAT_BERRIES } from "../lib/eggProfiles.js";
 
 const router = Router();
 
@@ -1027,6 +1029,197 @@ router.get("/teamrocket/history", async (req, res) => {
   } catch {
     res.status(500).json({ error: "Erreur serveur" });
   }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PokéÉlevage — administration
+// ═════════════════════════════════════════════════════════════════════════════
+const nowS = () => Math.floor(Date.now() / 1000);
+const eggToday = () => new Date().toISOString().slice(0, 10);
+
+// Sérialise un œuf pour l'admin : jauges, baies données, timer, candidats probables.
+async function adminSerializeEgg(egg) {
+  const feedRows = await all(`SELECT berry_id, qty FROM egg_feedings WHERE egg_id = ?`, [egg.id]);
+  const feedings = {};
+  for (const f of feedRows) feedings[f.berry_id] = f.qty;
+  const { typeCount, statVec } = aggregateFeed(feedRows.filter(f => TYPE_BERRIES[f.berry_id] || STAT_BERRIES[f.berry_id]));
+  const nextActionAt = (egg.last_action_at || 0) > 0 ? egg.last_action_at + 24 * 3600 : 0;
+  const inCooldown = nextActionAt > nowS();
+
+  const g34 = await gen34Unlocked(egg.user_id);
+  const pool = await loadPool(egg.rarity, g34);
+  const candidates = topCandidates(pool, egg, feedRows, 5);
+
+  return {
+    id: egg.id, user_id: egg.user_id, slot: egg.slot, rarity: egg.rarity,
+    created_at: egg.created_at, hatch_at: egg.hatch_at, now: nowS(),
+    ready: nowS() >= egg.hatch_at,
+    shiny_bonus: egg.shiny_bonus, enigma: !!egg.enigma, meal_armed: !!egg.meal_armed,
+    feedings, typeGauge: typeCount, statGauge: statVec,
+    dailyAction: inCooldown ? egg.last_action : null,
+    nextActionAt: inCooldown ? nextActionAt : null,
+    poolSize: pool.length, candidates,
+  };
+}
+
+// GET /api/admin/elevage — tous les œufs de tous les joueurs + synthèse
+router.get("/elevage", async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT e.*, u.username FROM eggs e JOIN users u ON u.id = e.user_id ORDER BY e.hatch_at ASC`
+    );
+    const eggs = [];
+    for (const e of rows) {
+      const s = await adminSerializeEgg(e);
+      eggs.push({ ...s, username: e.username });
+    }
+    const byRarity = {};
+    for (const e of eggs) byRarity[e.rarity] = (byRarity[e.rarity] || 0) + 1;
+    res.json({ total: eggs.length, byRarity, eggs });
+  } catch (e) { console.error("admin elevage", e); res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// GET /api/admin/elevage/user/:username — détail d'un joueur (slots, œufs, baies)
+router.get("/elevage/user/:username", async (req, res) => {
+  try {
+    const u = await get(`SELECT id, username FROM users WHERE username = ?`, [req.params.username]);
+    if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
+    const slots = await get(`SELECT slots_unlocked FROM user_slots WHERE user_id = ?`, [u.id]);
+    const eggRows = await all(`SELECT * FROM eggs WHERE user_id = ? ORDER BY slot`, [u.id]);
+    const eggs = [];
+    for (const e of eggRows) eggs.push(await adminSerializeEgg(e));
+    const berryRows = await all(`SELECT berry_id, qty FROM user_berries WHERE user_id = ? ORDER BY berry_id`, [u.id]);
+    const berries = {};
+    for (const b of berryRows) berries[b.berry_id] = b.qty;
+    res.json({ userId: u.id, username: u.username, slotsUnlocked: slots?.slots_unlocked || 1, eggs, berries });
+  } catch (e) { console.error("admin elevage user", e); res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// POST /api/admin/elevage/hatch — { eggId } : force l'éclosion (même algo que le joueur)
+router.post("/elevage/hatch", async (req, res) => {
+  try {
+    const egg = await get(`SELECT * FROM eggs WHERE id = ?`, [Number(req.body.eggId)]);
+    if (!egg) return res.status(404).json({ error: "Œuf introuvable" });
+    const result = await performHatch(egg);
+    if (!result) return res.status(500).json({ error: "Pool vide pour cette rareté." });
+    res.json({ success: true, ...result });
+  } catch (e) { console.error("admin elevage hatch", e); res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// POST /api/admin/elevage/reset-daily — { eggId } : réinitialise le cooldown d'action
+router.post("/elevage/reset-daily", async (req, res) => {
+  try {
+    const eggId = Number(req.body.eggId);
+    await run(`UPDATE eggs SET last_action_at = 0, last_action = NULL WHERE id = ?`, [eggId]);
+    res.json({ success: true });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// POST /api/admin/elevage/make-ready — { eggId } : rend l'œuf immédiatement éclosable
+router.post("/elevage/make-ready", async (req, res) => {
+  try {
+    const eggId = Number(req.body.eggId);
+    const r = await run(`UPDATE eggs SET hatch_at = ? WHERE id = ?`, [nowS(), eggId]);
+    if (r.changes === 0) return res.status(404).json({ error: "Œuf introuvable" });
+    res.json({ success: true });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// POST /api/admin/elevage/delete — { eggId } : supprime l'œuf (libère le slot)
+router.post("/elevage/delete", async (req, res) => {
+  try {
+    const eggId = Number(req.body.eggId);
+    await run(`DELETE FROM eggs WHERE id = ?`, [eggId]);
+    await run(`DELETE FROM egg_feedings WHERE egg_id = ?`, [eggId]);
+    await run(`DELETE FROM daily_actions WHERE egg_id = ?`, [eggId]);
+    res.json({ success: true });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// POST /api/admin/elevage/set-rarity — { eggId, rarity } : change la rareté (pool)
+router.post("/elevage/set-rarity", async (req, res) => {
+  try {
+    const eggId = Number(req.body.eggId);
+    const rarity = String(req.body.rarity || "");
+    if (!["stade1", "stade2", "stade3", "legendary", "mythic"].includes(rarity))
+      return res.status(400).json({ error: "Rareté invalide" });
+    const r = await run(`UPDATE eggs SET rarity = ? WHERE id = ?`, [rarity, eggId]);
+    if (r.changes === 0) return res.status(404).json({ error: "Œuf introuvable" });
+    res.json({ success: true });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// POST /api/admin/elevage/set-egg — { eggId, shiny_bonus?, enigma? } : édite un œuf
+router.post("/elevage/set-egg", async (req, res) => {
+  try {
+    const eggId = Number(req.body.eggId);
+    const egg = await get(`SELECT * FROM eggs WHERE id = ?`, [eggId]);
+    if (!egg) return res.status(404).json({ error: "Œuf introuvable" });
+    const shiny = req.body.shiny_bonus != null ? Math.max(0, Math.min(100, Number(req.body.shiny_bonus))) : egg.shiny_bonus;
+    const enigma = req.body.enigma != null ? (req.body.enigma ? 1 : 0) : egg.enigma;
+    await run(`UPDATE eggs SET shiny_bonus = ?, enigma = ? WHERE id = ?`, [shiny, enigma, eggId]);
+    res.json({ success: true });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// POST /api/admin/elevage/berries/set — { username, berry_id, qty } : fixe un stock de baie
+router.post("/elevage/berries/set", async (req, res) => {
+  try {
+    const u = await get(`SELECT id FROM users WHERE username = ?`, [req.body.username]);
+    if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
+    const berryId = String(req.body.berry_id || "");
+    if (!ALL_BERRIES.has(berryId)) return res.status(400).json({ error: "Baie invalide" });
+    const qty = Math.max(0, Math.min(9999, Math.round(Number(req.body.qty))));
+    if (!Number.isFinite(qty)) return res.status(400).json({ error: "Quantité invalide" });
+    await run(
+      `INSERT INTO user_berries (user_id, berry_id, qty) VALUES (?,?,?)
+       ON CONFLICT(user_id, berry_id) DO UPDATE SET qty = excluded.qty`,
+      [u.id, berryId, qty]
+    );
+    res.json({ success: true, berry_id: berryId, qty });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// Supprime les œufs (et données liées) situés dans un slot >= threshold.
+async function cleanEggsAboveSlot(userId, threshold) {
+  const orphans = await all(`SELECT id FROM eggs WHERE user_id = ? AND slot >= ?`, [userId, threshold]);
+  for (const o of orphans) {
+    await run(`DELETE FROM eggs WHERE id = ?`, [o.id]);
+    await run(`DELETE FROM egg_feedings WHERE egg_id = ?`, [o.id]);
+    await run(`DELETE FROM daily_actions WHERE egg_id = ?`, [o.id]);
+  }
+  return orphans.length;
+}
+
+// POST /api/admin/elevage/slots/set — { username, slots } : fixe les slots débloqués
+router.post("/elevage/slots/set", async (req, res) => {
+  try {
+    const u = await get(`SELECT id FROM users WHERE username = ?`, [req.body.username]);
+    if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
+    const slots = Math.max(1, Math.min(3, Math.round(Number(req.body.slots))));
+    await run(
+      `INSERT INTO user_slots (user_id, slots_unlocked) VALUES (?,?)
+       ON CONFLICT(user_id) DO UPDATE SET slots_unlocked = excluded.slots_unlocked`,
+      [u.id, slots]
+    );
+    await cleanEggsAboveSlot(u.id, slots); // supprime les œufs des slots retirés
+    res.json({ success: true, slotsUnlocked: slots });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// POST /api/admin/elevage/slots/remove — { username } : retire 1 slot (le joueur devra le racheter)
+router.post("/elevage/slots/remove", async (req, res) => {
+  try {
+    const u = await get(`SELECT id FROM users WHERE username = ?`, [req.body.username]);
+    if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
+    const row = await get(`SELECT slots_unlocked FROM user_slots WHERE user_id = ?`, [u.id]);
+    const current = row?.slots_unlocked || 1;
+    if (current <= 1) return res.status(400).json({ error: "Le slot offert ne peut pas être retiré." });
+    const next = current - 1;
+    await run(`UPDATE user_slots SET slots_unlocked = ? WHERE user_id = ?`, [next, u.id]);
+    const removed = await cleanEggsAboveSlot(u.id, next); // supprime l'œuf du slot retiré
+    res.json({ success: true, slotsUnlocked: next, eggsRemoved: removed });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
 });
 
 export default router;

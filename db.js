@@ -687,6 +687,83 @@ export async function initDB() {
   await dbRun(`CREATE INDEX IF NOT EXISTS idx_versus_ladder_3v3_pts ON versus_ladder_3v3(points DESC)`);
   await dbRun(`CREATE INDEX IF NOT EXISTS idx_versus_ladder_6v6_pts ON versus_ladder_6v6(points DESC)`);
 
+  // ── PokéÉlevage ─────────────────────────────────────────────────────────────
+  // Slots débloqués par joueur (1 offert, 2→5 achetables).
+  await dbRun(`CREATE TABLE IF NOT EXISTS user_slots (
+    user_id        INTEGER PRIMARY KEY,
+    slots_unlocked INTEGER NOT NULL DEFAULT 1
+  )`);
+
+  // Inventaire de baies (séparé du shop principal).
+  await dbRun(`CREATE TABLE IF NOT EXISTS user_berries (
+    user_id  INTEGER NOT NULL,
+    berry_id TEXT    NOT NULL,
+    qty      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, berry_id)
+  )`);
+
+  // Œufs en incubation — 1 œuf par (user_id, slot). Timers en epoch (secondes).
+  await dbRun(`CREATE TABLE IF NOT EXISTS eggs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL,
+    slot         INTEGER NOT NULL,
+    rarity       TEXT    NOT NULL,
+    created_at   INTEGER NOT NULL,
+    hatch_at     INTEGER NOT NULL,
+    shiny_bonus  REAL    NOT NULL DEFAULT 0,
+    enigma       INTEGER NOT NULL DEFAULT 0,
+    meal_armed   INTEGER NOT NULL DEFAULT 0,
+    last_action_at INTEGER NOT NULL DEFAULT 0,
+    last_action    TEXT,
+    feed_bucket    REAL    NOT NULL DEFAULT 5,
+    feed_bucket_at INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (user_id, slot)
+  )`);
+  await dbRun(`CREATE INDEX IF NOT EXISTS idx_eggs_user ON eggs(user_id)`);
+  // Migrations rétrocompatibles (cooldown d'action 24h + jauge de faim)
+  try { await dbRun(`ALTER TABLE eggs ADD COLUMN last_action_at INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { await dbRun(`ALTER TABLE eggs ADD COLUMN last_action TEXT`); } catch {}
+  try { await dbRun(`ALTER TABLE eggs ADD COLUMN feed_bucket REAL NOT NULL DEFAULT 5`); } catch {}
+  try { await dbRun(`ALTER TABLE eggs ADD COLUMN feed_bucket_at INTEGER NOT NULL DEFAULT 0`); } catch {}
+
+  // Baies données à chaque œuf (double emploi : profil nourri + verrou 1×/œuf des spéciales).
+  await dbRun(`CREATE TABLE IF NOT EXISTS egg_feedings (
+    egg_id   INTEGER NOT NULL,
+    berry_id TEXT    NOT NULL,
+    qty      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (egg_id, berry_id)
+  )`);
+
+  // Verrou d'action quotidienne : 1 action / œuf / jour.
+  await dbRun(`CREATE TABLE IF NOT EXISTS daily_actions (
+    egg_id      INTEGER NOT NULL,
+    action_date TEXT    NOT NULL,
+    action      TEXT    NOT NULL,
+    user_id     INTEGER NOT NULL,
+    PRIMARY KEY (egg_id, action_date)
+  )`);
+
+  // Table de référence : profils Pokémon (peuplée par scripts/genPokemonProfiles.js).
+  await dbRun(`CREATE TABLE IF NOT EXISTS pokemon_profiles (
+    pokemon   TEXT PRIMARY KEY,
+    dex_id    INTEGER NOT NULL,
+    gen       INTEGER NOT NULL,
+    tier      TEXT    NOT NULL,
+    type1     TEXT    NOT NULL,
+    type2     TEXT,
+    base_hp   INTEGER, base_atk INTEGER, base_def INTEGER,
+    base_spa  INTEGER, base_spd INTEGER, base_vit INTEGER,
+    norm_hp   REAL, norm_atk REAL, norm_def REAL,
+    norm_spa  REAL, norm_spd REAL, norm_vit REAL
+  )`);
+  await dbRun(`CREATE INDEX IF NOT EXISTS idx_profiles_tier_gen ON pokemon_profiles(tier, gen)`);
+
+  // Prix de l'élevage (éditable admin, comme shop_prices) — seedé dans le livrable 3.
+  await dbRun(`CREATE TABLE IF NOT EXISTS elevage_prices (
+    item  TEXT PRIMARY KEY,
+    price INTEGER NOT NULL
+  )`);
+
   console.log("✅ Base de données initialisée");
 }
 

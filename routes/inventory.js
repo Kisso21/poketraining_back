@@ -2,8 +2,43 @@ import { Router } from "express";
 import { randomUUID } from "crypto";
 import { run, get, all, GEN1_POKEMONS, GEN2_POKEMONS, GEN3_POKEMONS, GEN4_POKEMONS } from "../db.js";
 import { getIO, emitToUser } from "../socket.js";
+import { TYPE_BERRIES, STAT_BERRIES } from "../lib/eggProfiles.js";
 
 const router = Router();
+
+// ── Arbres à baies du Safari : table de loot (tirage SERVEUR, anti-forge) ──────
+const SAFARI_BERRY_TABLE = [
+  { rarity: "commun",     chance: 50, pool: "type"    },
+  { rarity: "peu commun", chance: 30, pool: "stat"    },
+  { rarity: "rare",       chance: 20, pool: "special" },
+];
+// Baies spéciales pondérées (dans le palier "rare").
+const SAFARI_SPECIAL_WEIGHTS = { micle: 6, lansat: 4, starf: 3, enigma: 1, salac: 2 };
+const randOf = arr => arr[Math.floor(Math.random() * arr.length)];
+function pickWeighted(weights) {
+  const total = Object.values(weights).reduce((s, w) => s + w, 0);
+  let r = Math.random() * total;
+  for (const [k, w] of Object.entries(weights)) { if (r < w) return k; r -= w; }
+  return Object.keys(weights)[0];
+}
+// Un tirage = une baie (rareté indépendante).
+function rollOneBerry() {
+  const total = SAFARI_BERRY_TABLE.reduce((s, t) => s + t.chance, 0);
+  let r = Math.random() * total, tier = SAFARI_BERRY_TABLE[0];
+  for (const t of SAFARI_BERRY_TABLE) { if (r < t.chance) { tier = t; break; } r -= t.chance; }
+  let berry_id;
+  if (tier.pool === "type")        berry_id = randOf(Object.keys(TYPE_BERRIES));
+  else if (tier.pool === "stat")   berry_id = randOf(Object.keys(STAT_BERRIES));
+  else                             berry_id = pickWeighted(SAFARI_SPECIAL_WEIGHTS);
+  return { berry_id, rarity: tier.rarity };
+}
+// Récolte d'un arbre = 1 à 2 baies TIRÉES INDÉPENDAMMENT (donc potentiellement différentes).
+function rollBerryHarvest() {
+  const drops = 1 + (Math.random() < 0.5 ? 1 : 0);
+  const list = [];
+  for (let i = 0; i < drops; i++) list.push(rollOneBerry());
+  return list;
+}
 
 // ── Safari : paramètres du quota journalier (le SERVEUR fait foi) ────────────
 const SAFARI_FREE_PER_DAY   = 2;
@@ -756,6 +791,33 @@ router.post("/safari-reward/:username", async (req, res) => {
     getIO()?.emit("sync:inventory", { userId: user.id, inventory: updated });
     res.json({ success: true, item, qty });
   } catch (err) {
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/inventory/safari-berry-tree/:username — récolte d'un arbre à baies.
+// La baie est tirée CÔTÉ SERVEUR (anti-forge) et créditée dans user_berries.
+router.post("/safari-berry-tree/:username", async (req, res) => {
+  const username = req.user.username;
+  const { token, actionId } = req.body;
+  try {
+    const user = await getUserByUsername(username);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    const claim = await safariReserveAction(user.id, token, actionId);
+    if (claim === "dup") return res.json({ success: true, duplicate: true });
+    if (claim !== "ok")  return res.status(403).json({ error: "Partie safari invalide ou terminée" });
+
+    const drops = rollBerryHarvest();               // 1-2 baies, tirées indépendamment
+    for (const d of drops) {
+      await run(
+        `INSERT INTO user_berries (user_id, berry_id, qty) VALUES (?,?,1)
+         ON CONFLICT(user_id, berry_id) DO UPDATE SET qty = qty + 1`,
+        [user.id, d.berry_id]
+      );
+    }
+    res.json({ success: true, drops });
+  } catch (err) {
+    console.error("safari-berry-tree", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
