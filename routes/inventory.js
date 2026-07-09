@@ -7,13 +7,15 @@ import { TYPE_BERRIES, STAT_BERRIES } from "../lib/eggProfiles.js";
 const router = Router();
 
 // ── Arbres à baies du Safari : table de loot (tirage SERVEUR, anti-forge) ──────
+// Stat : 5 % chacune (6 × 5 = 30 %). Rare : 1 % chacune (5 × 1 = 5 %).
+// Type : les 65 % restants / 18 = 3,6(1) % chacune.
 const SAFARI_BERRY_TABLE = [
-  { rarity: "commun",     chance: 50, pool: "type"    },
+  { rarity: "commun",     chance: 65, pool: "type"    },
   { rarity: "peu commun", chance: 30, pool: "stat"    },
-  { rarity: "rare",       chance: 20, pool: "special" },
+  { rarity: "rare",       chance: 5,  pool: "special" },
 ];
-// Baies spéciales pondérées (dans le palier "rare").
-const SAFARI_SPECIAL_WEIGHTS = { micle: 6, lansat: 4, starf: 3, enigma: 1, salac: 2 };
+// Baies spéciales : toutes au même taux (1 % chacune, uniforme dans le palier "rare").
+const SAFARI_SPECIAL_WEIGHTS = { micle: 1, lansat: 1, starf: 1, enigma: 1, salac: 1 };
 const randOf = arr => arr[Math.floor(Math.random() * arr.length)];
 function pickWeighted(weights) {
   const total = Object.values(weights).reduce((s, w) => s + w, 0);

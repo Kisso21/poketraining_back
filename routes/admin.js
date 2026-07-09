@@ -21,7 +21,7 @@ router.use(verifyAdmin);
 router.get("/user/:username", async (req, res) => {
   try {
     const u = await get(
-      `SELECT u.id, u.username, u.role,
+      `SELECT u.id, u.username, u.role, u.email, u.email_verified,
               i.pokedollars, i.pokeball, i.superball, i.hyperball, i.masterball,
               i.resetball, i.superbonbon, i.potion, i.lootbox,
               i.ticketsafari, i.goldappat, i.sablier, i.charmeeclaire

@@ -35,7 +35,7 @@ const PURCHASABLE_BERRIES = new Set([...Object.keys(TYPE_BERRIES), ...Object.key
 
 // ── Prix par défaut (seedés dans elevage_prices, éditables via admin) ─────────
 const DEFAULT_PRICES = (() => {
-  const p = { egg: 1000, slot_2: 5000, slot_3: 20000, slot_4: 60000, slot_5: 150000 };
+  const p = { egg: 1500, slot_2: 25000, slot_3: 50000, slot_4: 60000, slot_5: 150000 };
   for (const b of Object.keys(TYPE_BERRIES)) p[b] = 200;
   for (const b of Object.keys(STAT_BERRIES)) p[b] = 350;
   return p;
