@@ -195,7 +195,7 @@ router.post("/capture/throw", async (req, res) => {
 
     const br   = computeCaptureBreakdown(category, ballType, {
       scoreBonus, dresseurBonus, appAtBonus, badgeCaptureBonus, dupRarePenalty,
-    });
+    }, pokemonName);
     const roll   = Math.random() * 100;
     const caught = roll < br.rate;
 

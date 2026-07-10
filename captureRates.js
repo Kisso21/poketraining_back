@@ -9,19 +9,42 @@ import { dirname, join } from "path";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
-// id + stage par nom FR. gen 1-2 dans le repo backend, gen 3-4 dans html/data.
+// id + stage + BST (somme des stats de base) par nom FR.
+// gen 1-2 dans le repo backend, gen 3-4 dans html/data.
 const NAME_MAP = {};
 function loadPokemon(path) {
   try {
     const arr = JSON.parse(readFileSync(path, "utf8"));
     for (const p of arr) {
       const name = p.name || p.nom;
-      if (name && !NAME_MAP[name]) NAME_MAP[name] = { id: p.id || 0, stage: p.stage || 1 };
+      if (!name || NAME_MAP[name]) continue;
+      const bst = (p.hp || 0) + (p.atk || 0) + (p.def || 0) + (p.sp_atk || 0) + (p.sp_def || 0) + (p.speed || 0);
+      NAME_MAP[name] = { id: p.id || 0, stage: p.stage || 1, bst };
     }
   } catch { /* fichier indisponible : catégorie retombera sur stade1 */ }
 }
 loadPokemon(join(__dir, "gen1_2.json"));
 loadPokemon(join(__dir, "../html/data/gen3_4.json"));
+
+// Bornes réelles de BST sur tout le dataset chargé, pour normaliser le multiplicateur.
+// MissingNo (id 0, catégorie "random") exclu : son BST factice fausserait le minimum.
+const ALL_BST = Object.entries(NAME_MAP)
+  .filter(([name, p]) => name !== "MissingNo" && p.id !== 0 && p.bst > 0)
+  .map(([, p]) => p.bst);
+const BST_MIN = ALL_BST.length ? Math.min(...ALL_BST) : 180;
+const BST_MAX = ALL_BST.length ? Math.max(...ALL_BST) : 720;
+
+// Multiplicateur de difficulté basé sur le BST : plus un Pokémon est statistiquement
+// costaud, plus il est dur à capturer. Va de 1.4 (BST le plus faible du dataset) à
+// 0.6 (BST le plus élevé), interpolé linéairement.
+const BST_MULT_MAX = 1.4;
+const BST_MULT_MIN = 0.6;
+export function getBstMultiplier(pokemonName) {
+  const bst = NAME_MAP[pokemonName]?.bst;
+  if (!bst || BST_MAX === BST_MIN) return 1.0;
+  const t = Math.min(1, Math.max(0, (bst - BST_MIN) / (BST_MAX - BST_MIN)));
+  return +(BST_MULT_MAX - t * (BST_MULT_MAX - BST_MULT_MIN)).toFixed(3);
+}
 
 // Listes identiques à captureRates.js côté front.
 const FOSSILS     = new Set([138,139,140,141,142, 345,346,347,348, 408,409,410,411]);
@@ -52,7 +75,9 @@ export function getPokemonCategory(pokemonName) {
 
 // Taux de base pour UNE balle. Master Ball toujours 100. MissingNo (random) :
 // taux tiré au hasard, comme côté front (mais seed serveur : le client ne dicte rien).
-function getBaseRate(category, ballType) {
+// bstMult affine le taux à l'intérieur de la catégorie selon la puissance statistique
+// du Pokémon (1.4 = BST le plus faible du jeu, 0.6 = BST le plus élevé).
+function getBaseRate(category, ballType, bstMult = 1.0) {
   if (ballType === "masterball") return 100;
   if (category === "random") {
     const seed = Math.random();
@@ -62,17 +87,18 @@ function getBaseRate(category, ballType) {
     return 0;
   }
   const mult = MULTIPLIERS[category] ?? 1.0;
-  return Math.round((BASE[ballType] ?? 0) * mult);
+  return Math.round((BASE[ballType] ?? 0) * mult * bstMult);
 }
 
 // Décomposition complète du calcul (base calculée UNE seule fois — nécessaire
 // pour MissingNo dont la base est aléatoire). Reproduit getFinalRates + dupRarePenalty.
 // Renvoie chaque terme, utile pour le mode debug admin.
-export function computeCaptureBreakdown(category, ballType, bonuses = {}) {
+export function computeCaptureBreakdown(category, ballType, bonuses = {}, pokemonName = null) {
   const { scoreBonus = 0, dresseurBonus = 0, appAtBonus = 0, badgeCaptureBonus = 0, dupRarePenalty = false } = bonuses;
-  const base = getBaseRate(category, ballType);
+  const bstMult = pokemonName ? getBstMultiplier(pokemonName) : 1.0;
+  const base = getBaseRate(category, ballType, bstMult);
   if (ballType === "masterball") {
-    return { category, ballType, base: 100, scoreBonus: 0, dresseurBonus: 0, appAtBonus: 0,
+    return { category, ballType, base: 100, bstMult: 1, scoreBonus: 0, dresseurBonus: 0, appAtBonus: 0,
       badgeCaptureBonus: 0, total: 0, beforePenalty: 100, dupRarePenalty: false, rate: 100 };
   }
   const dBonus = Math.round(dresseurBonus);
@@ -80,13 +106,13 @@ export function computeCaptureBreakdown(category, ballType, bonuses = {}) {
   const total  = scoreBonus + dBonus + appAtBonus + bBonus;
   const beforePenalty = Math.min(100, base + total);
   const rate = dupRarePenalty ? Math.round(beforePenalty / 2) : beforePenalty;
-  return { category, ballType, base, scoreBonus, dresseurBonus: dBonus, appAtBonus,
+  return { category, ballType, base, bstMult, scoreBonus, dresseurBonus: dBonus, appAtBonus,
     badgeCaptureBonus: bBonus, total, beforePenalty, dupRarePenalty, rate };
 }
 
 // Taux final (0-100). Master Ball reste 100.
-export function computeFinalRate(category, ballType, bonuses = {}) {
-  return computeCaptureBreakdown(category, ballType, bonuses).rate;
+export function computeFinalRate(category, ballType, bonuses = {}, pokemonName = null) {
+  return computeCaptureBreakdown(category, ballType, bonuses, pokemonName).rate;
 }
 
 // Bonus capture des badges (miroir de badgesConfig.js, NON plafonné comme côté front).
