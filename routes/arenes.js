@@ -337,10 +337,10 @@ const BOSS_REWARD = { pokedollars: 50000, lootbox: 20 };
 
 async function bossUnlocked(userId) {
   const row = await get(
-    `SELECT unlocked FROM achievements WHERE user_id = ? AND achievement_id = 'final-boss'`,
+    `SELECT claimed FROM achievements WHERE user_id = ? AND achievement_id = 'final-boss'`,
     [userId]
   );
-  return Number(row?.unlocked) === 1;
+  return Number(row?.claimed) === 1;
 }
 
 // GET /boss/:username — statut du boss final pour le joueur
