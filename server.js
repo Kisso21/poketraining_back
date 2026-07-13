@@ -35,6 +35,7 @@ import notificationRoutes from "./routes/notifications.js";
 import dailyLoginRoutes from "./routes/dailyLogin.js";
 import bountyRoutes from "./routes/bounty.js";
 import elevageRoutes from "./routes/elevage.js";
+import teamRoutes from "./routes/teams.js";
 import { scheduleWeeklyReset } from "./jobs/ladderReset.js";
 import { FR_TO_CRY_ID } from "./routes/gameState.js";
 
@@ -197,6 +198,7 @@ app.use("/api/passives",      verifyToken, passiveRoutes);
 app.use("/api/level",         verifyToken, levelRoutes);
 app.use("/api/pokeclick",     verifyToken, pokeclickRoutes);
 app.use("/api/arenes",        verifyToken, areneRoutes);
+app.use("/api/teams",         verifyToken, teamRoutes);
 app.use("/api/reserve",      verifyToken, reserveRoutes);
 app.use("/api/teamrocket",   verifyToken, teamRocketRoutes);
 app.use("/api/trade",        verifyToken, pokeTradeRoutes);

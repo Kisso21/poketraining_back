@@ -333,6 +333,15 @@ export async function initDB() {
   // Horodatage de la dernière victoire (conservé même après reset du cooldown)
   try { await dbRun(`ALTER TABLE user_arenes ADD COLUMN won_at TEXT DEFAULT NULL`); } catch {}
 
+  // Équipes favorites (PokéArène) — presets de 6 Pokémon réutilisables
+  await dbRun(`CREATE TABLE IF NOT EXISTS user_teams (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    username   TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    slots_json TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`);
+
   // PokéClick upgrades
   await dbRun(`CREATE TABLE IF NOT EXISTS pokeclick_upgrades (
     user_id     INTEGER NOT NULL,
