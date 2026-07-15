@@ -41,12 +41,12 @@ async function syncBalance(userId, credited) {
 
 // ══════════════════════════════════════ SLOTS ════════════════════════════════
 const SLOTS = [
-  { id: 129, label: "Magicarpe", weight: 35, x3: 2   },
-  { id: 39,  label: "Rondoudou", weight: 25, x3: 5   },
-  { id: 25,  label: "Pikachu",   weight: 18, x3: 10  },
-  { id: 145, label: "Électhor",  weight: 10, x3: 25  },
-  { id: 150, label: "Mewtwo",    weight: 7,  x3: 50  },
-  { id: 151, label: "Mew",       weight: 5,  x3: 100 },
+  { id: 129, label: "Magicarpe", weight: 35, x3: 3   },
+  { id: 39,  label: "Rondoudou", weight: 25, x3: 9   },
+  { id: 25,  label: "Pikachu",   weight: 18, x3: 16  },
+  { id: 145, label: "Électhor",  weight: 10, x3: 40  },
+  { id: 150, label: "Mewtwo",    weight: 7,  x3: 80  },
+  { id: 151, label: "Mew",       weight: 5,  x3: 160 },
 ];
 const SLOT_POOL = SLOTS.flatMap(s => Array(s.weight).fill(s));
 const pickSlot  = () => SLOT_POOL[Math.floor(Math.random() * SLOT_POOL.length)];
