@@ -333,6 +333,34 @@ export async function initDB() {
   // Horodatage de la dernière victoire (conservé même après reset du cooldown)
   try { await dbRun(`ALTER TABLE user_arenes ADD COLUMN won_at TEXT DEFAULT NULL`); } catch {}
 
+  // PokéSurvival — runs en cours et historique
+  await dbRun(`CREATE TABLE IF NOT EXISTS survival_runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'active',
+    streak        INTEGER NOT NULL DEFAULT 0,
+    currency      INTEGER NOT NULL DEFAULT 0,
+    team_json     TEXT NOT NULL,
+    state_json    TEXT NOT NULL DEFAULT '{}',
+    created_at    TEXT DEFAULT (datetime('now')),
+    updated_at    TEXT DEFAULT (datetime('now'))
+  )`);
+  await dbRun(`CREATE TABLE IF NOT EXISTS survival_shop_prices (
+    item TEXT PRIMARY KEY,
+    buy  INTEGER NOT NULL
+  )`);
+  await dbRun(`INSERT OR IGNORE INTO survival_shop_prices (item, buy) VALUES
+    ('surv_potion_petite',  15),
+    ('surv_potion_moyenne', 30),
+    ('surv_potion_grande',  45),
+    ('surv_rappel',         40)`);
+
+  // PokéSurvival — cooldown entre deux tentatives (1h après la fin d'un run)
+  await dbRun(`CREATE TABLE IF NOT EXISTS survival_cooldowns (
+    username        TEXT PRIMARY KEY,
+    next_attempt_at TEXT
+  )`);
+
   // Équipes favorites (PokéArène) — presets de 6 Pokémon réutilisables
   await dbRun(`CREATE TABLE IF NOT EXISTS user_teams (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1222,4 +1222,37 @@ router.post("/elevage/slots/remove", async (req, res) => {
   } catch { res.status(500).json({ error: "Erreur serveur" }); }
 });
 
+// ── PokéSurvival (admin) ─────────────────────────────────────────────
+
+// GET /api/admin/survival/user/:username — run en cours + cooldown de tentative
+router.get("/survival/user/:username", async (req, res) => {
+  try {
+    const { username } = req.params;
+    const u = await get(`SELECT id FROM users WHERE username = ?`, [username]);
+    if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
+    const activeRun = await get(`SELECT streak, currency, status, updated_at FROM survival_runs WHERE username = ? AND status='active'`, [username]);
+    const lastRun   = await get(`SELECT streak, currency, status, updated_at FROM survival_runs WHERE username = ? ORDER BY updated_at DESC LIMIT 1`, [username]);
+    const cd = await get(`SELECT next_attempt_at FROM survival_cooldowns WHERE username = ?`, [username]);
+    const now  = Date.now();
+    const next = cd?.next_attempt_at ? new Date(cd.next_attempt_at).getTime() : 0;
+    const onCooldown = !!(cd?.next_attempt_at && now < next);
+    res.json({
+      activeRun: activeRun || null,
+      lastRun: lastRun || null,
+      cooldown: { onCooldown, nextAvailableAt: onCooldown ? cd.next_attempt_at : null },
+    });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// POST /api/admin/survival/reset-cooldown — { username } : lève le temps de récupération
+router.post("/survival/reset-cooldown", async (req, res) => {
+  try {
+    const { username } = req.body;
+    const u = await get(`SELECT id FROM users WHERE username = ?`, [username]);
+    if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
+    await run(`DELETE FROM survival_cooldowns WHERE username = ?`, [username]);
+    res.json({ success: true });
+  } catch { res.status(500).json({ error: "Erreur serveur" }); }
+});
+
 export default router;

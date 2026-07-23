@@ -13,6 +13,9 @@ function computeLevel(xp, cap = MAX_LEVEL_BASE) {
 
 const router = Router();
 
+// Les 7 badges des arènes de Kanto (miroir de ARENE_CONFIG, région "Kanto")
+const KANTO_BADGES = ["Badge Roche", "Badge Cascade", "Badge Foudre", "Badge Prisme", "Badge Âme", "Badge Marais", "Badge Volcan"];
+
 // ── Récompenses en Pokédollars ──────────────────────────────────────────────
 const REWARDS = {
   // PokéTraining
@@ -33,6 +36,7 @@ const REWARDS = {
   "unlock-arene":          400,
   "unlock-versus":         500,
   "unlock-elevage":        400,
+  "unlock-survival":       600,
   // Safari biomes
   "safari-foret":          300,
   "safari-ocean":          300,
@@ -401,6 +405,7 @@ const ITEM_REWARDS = {
   "unlock-arene":          { lootbox: 1 },
   "unlock-versus":         { lootbox: 1 },
   "unlock-elevage":        { lootbox: 1 },
+  "unlock-survival":       { lootbox: 1 },
   // Safari biomes
   "safari-foret":          { pokeball: 2 },
   "safari-ocean":          { resetball: 1 },
@@ -1484,6 +1489,15 @@ export async function checkAchievements(userId) {
       if ((badgeRow?.cnt || 0) >= 2) toUnlock.push("unlock-versus");
     }
 
+    // PokéSurvival : les 7 badges d'arène de Kanto obtenus
+    if (!unlockedSet.has("unlock-survival")) {
+      const badgeRow = await get(
+        `SELECT COUNT(*) as cnt FROM user_badges WHERE user_id = ? AND badge IN (${KANTO_BADGES.map(() => "?").join(",")}) AND unlocked = 1`,
+        [userId, ...KANTO_BADGES]
+      );
+      if ((badgeRow?.cnt || 0) >= KANTO_BADGES.length) toUnlock.push("unlock-survival");
+    }
+
     for (const id of pendingPokedex) {
       const req = POKEDEX_REQS[id];
       let met = false;
@@ -1526,6 +1540,13 @@ export async function checkAchievements(userId) {
         [userId]
       );
       if ((badgeRow?.cnt || 0) >= 2) toUnlock.push("unlock-versus");
+    }
+    if (!unlockedSet.has("unlock-survival")) {
+      const badgeRow = await get(
+        `SELECT COUNT(*) as cnt FROM user_badges WHERE user_id = ? AND badge IN (${KANTO_BADGES.map(() => "?").join(",")}) AND unlocked = 1`,
+        [userId, ...KANTO_BADGES]
+      );
+      if ((badgeRow?.cnt || 0) >= KANTO_BADGES.length) toUnlock.push("unlock-survival");
     }
   }
 
@@ -1764,6 +1785,15 @@ router.post("/claim", async (req, res) => {
         [userId]
       );
       if ((badgeRow?.cnt || 0) < 2) return res.status(400).json({ error: "Conditions du succès non remplies (badges manquants)" });
+    }
+
+    // Validation supplémentaire pour unlock-survival : vérifier que les 7 badges Kanto sont réellement obtenus
+    if (achievementId === "unlock-survival") {
+      const badgeRow = await get(
+        `SELECT COUNT(*) as cnt FROM user_badges WHERE user_id = ? AND badge IN (${KANTO_BADGES.map(() => "?").join(",")}) AND unlocked = 1`,
+        [userId, ...KANTO_BADGES]
+      );
+      if ((badgeRow?.cnt || 0) < KANTO_BADGES.length) return res.status(400).json({ error: "Conditions du succès non remplies (badges manquants)" });
     }
 
     const reward  = REWARDS[achievementId] || 0;

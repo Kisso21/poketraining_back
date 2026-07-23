@@ -36,6 +36,7 @@ import dailyLoginRoutes from "./routes/dailyLogin.js";
 import bountyRoutes from "./routes/bounty.js";
 import elevageRoutes from "./routes/elevage.js";
 import teamRoutes from "./routes/teams.js";
+import survivalRoutes from "./routes/survival.js";
 import { scheduleWeeklyReset } from "./jobs/ladderReset.js";
 import { FR_TO_CRY_ID } from "./routes/gameState.js";
 
@@ -206,6 +207,7 @@ app.use("/api/notifications", verifyToken, notificationRoutes);
 app.use("/api/daily",        verifyToken, dailyLoginRoutes);
 app.use("/api/bounty",       verifyToken, bountyRoutes);
 app.use("/api/elevage",      verifyToken, elevageRoutes);
+app.use("/api/survival",     verifyToken, survivalRoutes);
 app.use("/api/admin",         verifyAdmin, adminRoutes);
 app.use("/api/events",                    eventRoutes);
 app.use("/api/versus",     verifyToken,  versusRoutes);
