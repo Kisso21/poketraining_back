@@ -35,8 +35,8 @@ async function saveState(runId, state, streak, currency) {
 }
 
 function buildBattleForStreak(streak, playerTeam, pool, activeMutations, playerLegendaryCount = 0) {
-  const { aiLevel, teamSize, isFinalBoss } = SE.getSurvivalProfile(streak);
-  const opponentTeam = SE.buildOpponentTeam(pool, teamSize, playerTeam, aiLevel, playerLegendaryCount);
+  const { t, aiLevel, teamSize, isFinalBoss } = SE.getSurvivalProfile(streak);
+  const opponentTeam = SE.buildOpponentTeam(pool, teamSize, playerTeam, aiLevel, playerLegendaryCount, t);
   return { opponentTeam, aiLevel, isFinalBoss, trainerLabel: `Dresseur #${streak + 1}` };
 }
 
@@ -128,6 +128,21 @@ router.post("/:username/start", async (req, res) => {
     const legendaryCount = validTeam.filter(s => SE.isLegendary(s.name)).length;
     if (legendaryCount > 1) {
       return res.status(400).json({ error: "Maximum 1 légendaire/mythique autorisé dans l'équipe de départ." });
+    }
+
+    // Vérifier que chaque Pokémon appartient bien au joueur
+    const userId = await get(`SELECT id FROM users WHERE username=?`, [username]);
+    if (!userId) return res.status(404).json({ error: "Utilisateur introuvable." });
+    for (const s of validTeam) {
+      const owned = await get(
+        `SELECT id FROM captures WHERE user_id=? AND pokemon_name=? AND is_shiny=?`,
+        [userId.id, s.name, s.isShiny ? 1 : 0]
+      );
+      if (!owned) {
+        return res.status(400).json({
+          error: `Vous ne possédez pas ${s.name}${s.isShiny ? " (shiny)" : ""}.`
+        });
+      }
     }
 
     // Build initial state with full HP
@@ -279,6 +294,10 @@ router.post("/:username/turn", async (req, res) => {
       slot.fainted = slot.curHP <= 0;
     });
     state.activeIdx = newBS.p1Active;
+
+    // After a battle win, reset activeIdx to 0 so the team order is respected
+    // (player can reorder in check_team; without this the last fighter would lead)
+    if (newBS.winner === "p1") state.activeIdx = 0;
 
     // Decrement tempBuffs
     state.tempBuffs = (state.tempBuffs || [])

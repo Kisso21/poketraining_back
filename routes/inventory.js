@@ -671,7 +671,7 @@ router.post("/safari-encounter-start/:username", async (req, res) => {
     const enc = JSON.stringify({ id: encId, pokemon: String(pokemon).slice(0, 40), isShiny: !!isShiny, source: String(source || '').slice(0, 20) });
     const r = await run(
       `UPDATE safari_daily SET active_encounter = ?
-       WHERE user_id = ? AND date = ? AND active_run = ? AND active_encounter IS NULL AND steps_left > 0`,
+       WHERE user_id = ? AND date = ? AND active_run = ? AND active_encounter IS NULL AND steps_left >= 0`,
       [enc, user.id, date, token]
     );
     if (r.changes !== 1) {
