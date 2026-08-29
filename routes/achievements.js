@@ -794,220 +794,35 @@ const LEVEL_REQS = {
 // normalAll  : tous ces Pokémon en version normale
 // totalCount : nombre total de captures
 // biomeCount : nombre de captures dans un groupe de types Safari
-const SAFARI_BIOME_REQS = {
-  "foret": {
-    "count": 10,
-    "names": [
-      "Bulbizarre",
-      "Herbizarre",
-      "Florizarre",
-      "Chenipan",
-      "Chrysacier",
-      "Papilusion",
-      "Aspicot",
-      "Coconfort",
-      "Dardargnan",
-      "Mystherbe",
-      "Ortide",
-      "Rafflesia",
-      "Paras",
-      "Parasect",
-      "Mimitoss",
-      "Aéromite",
-      "Chétiflor",
-      "Boustiflor",
-      "Empiflor",
-      "Noeunoeuf",
-      "Noadkoko",
-      "Saquedeneu",
-      "Insécateur",
-      "Scarabrute"
-    ]
-  },
-  "ocean": {
-    "count": 10,
-    "names": [
-      "Carapuce",
-      "Carabaffe",
-      "Tortank",
-      "Psykokwak",
-      "Akwakwak",
-      "Ptitard",
-      "Têtarte",
-      "Tartard",
-      "Tentacool",
-      "Tentacruel",
-      "Ramoloss",
-      "Flagadoss",
-      "Otaria",
-      "Lamantine",
-      "Kokiyas",
-      "Crustabri",
-      "Krabby",
-      "Krabboss",
-      "Hypotrempe",
-      "Hypocéan",
-      "Poissirène",
-      "Poissoroy",
-      "Stari",
-      "Staross",
-      "Lippoutou",
-      "Magicarpe",
-      "Léviator",
-      "Lokhlass",
-      "Aquali",
-      "Amonita",
-      "Amonistar",
-      "Kabuto",
-      "Kabutops",
-      "Artikodin"
-    ]
-  },
-  "volcan": {
-    "count": 10,
-    "names": [
-      "Salamèche",
-      "Reptincel",
-      "Dracaufeu",
-      "Goupix",
-      "Feunard",
-      "Caninos",
-      "Arcanin",
-      "Ponyta",
-      "Galopa",
-      "Magmar",
-      "Pyroli",
-      "Sulfura"
-    ]
-  },
-  "montagne": {
-    "count": 10,
-    "names": [
-      "Sabelette",
-      "Sablaireau",
-      "Nidoqueen",
-      "Nidoking",
-      "Taupiqueur",
-      "Triopikeur",
-      "Férosinge",
-      "Colossinge",
-      "Tartard",
-      "Machoc",
-      "Machopeur",
-      "Mackogneur",
-      "Racaillou",
-      "Gravalanch",
-      "Grolem",
-      "Onix",
-      "Osselait",
-      "Ossatueur",
-      "Kicklee",
-      "Tygnon",
-      "Rhinocorne",
-      "Rhinoféros",
-      "Amonita",
-      "Amonistar",
-      "Kabuto",
-      "Kabutops",
-      "Ptéra"
-    ]
-  },
-  "marais": {
-    "count": 10,
-    "names": [
-      "Bulbizarre",
-      "Herbizarre",
-      "Florizarre",
-      "Aspicot",
-      "Coconfort",
-      "Dardargnan",
-      "Abo",
-      "Arbok",
-      "Nidoran♀",
-      "Nidorina",
-      "Nidoqueen",
-      "Nidoran♂",
-      "Nidorino",
-      "Nidoking",
-      "Nosferapti",
-      "Nosferalto",
-      "Mystherbe",
-      "Ortide",
-      "Rafflesia",
-      "Mimitoss",
-      "Aéromite",
-      "Chétiflor",
-      "Boustiflor",
-      "Empiflor",
-      "Tentacool",
-      "Tentacruel",
-      "Tadmorv",
-      "Grotadmorv",
-      "Fantominus",
-      "Spectrum",
-      "Ectoplasma",
-      "Smogo",
-      "Smogogo"
-    ]
-  },
-  "tempete": {
-    "count": 10,
-    "names": [
-      "Pikachu",
-      "Raichu",
-      "Abra",
-      "Kadabra",
-      "Alakazam",
-      "Ramoloss",
-      "Flagadoss",
-      "Magnéti",
-      "Magnéton",
-      "Fantominus",
-      "Spectrum",
-      "Ectoplasma",
-      "Soporifik",
-      "Hypnomade",
-      "Voltorbe",
-      "Électrode",
-      "Noeunoeuf",
-      "Noadkoko",
-      "Staross",
-      "M. Mime",
-      "Lippoutou",
-      "Élektek",
-      "Voltali",
-      "Électhor",
-      "Mewtwo",
-      "Mew"
-    ]
-  },
-  "ciel": {
-    "count": 10,
-    "names": [
-      "Dracaufeu",
-      "Papilusion",
-      "Roucool",
-      "Roucoups",
-      "Roucarnage",
-      "Piafabec",
-      "Rapasdepic",
-      "Nosferapti",
-      "Nosferalto",
-      "Canarticho",
-      "Doduo",
-      "Dodrio",
-      "Insécateur",
-      "Léviator",
-      "Ptéra",
-      "Artikodin",
-      "Électhor",
-      "Sulfura",
-      "Minidraco",
-      "Draco",
-      "Dracolosse"
-    ]
-  }
+// Types associés à chaque biome (miroir de BIOMES dans PokeSafari.jsx) :
+// le comptage de captures se base sur le TYPE réel du Pokémon (toutes générations
+// confondues), jamais sur une liste de noms figée à une génération.
+const SAFARI_BIOME_TYPES = {
+  "foret":    ["Plante", "Insecte"],
+  "ocean":    ["Eau", "Glace"],
+  "volcan":   ["Feu"],
+  "montagne": ["Roche", "Sol", "Combat", "Acier"],
+  "marais":   ["Poison"],
+  "tempete":  ["Électrik", "Psy", "Spectre", "Ténèbres"],
+  "ciel":     ["Vol", "Dragon"],
 };
+const SAFARI_BIOME_REQS = Object.fromEntries(
+  Object.entries(SAFARI_BIOME_TYPES).map(([biomeId, types]) => [biomeId, { count: 10, types, biomeId }])
+);
+
+// Cache des noms de Pokémon par type, construit depuis pokemon_profiles
+// (référence toutes générations, cf. scripts/genPokemonProfiles.js) afin que
+// les succès Safari comptent bien les captures de n'importe quelle génération.
+let _pokemonProfilesCache = null;
+async function getSafariBiomeNames(biomeId) {
+  if (!_pokemonProfilesCache) {
+    _pokemonProfilesCache = await all(`SELECT pokemon, type1, type2 FROM pokemon_profiles`);
+  }
+  const types = SAFARI_BIOME_TYPES[biomeId] || [];
+  return _pokemonProfilesCache
+    .filter(r => types.includes(r.type1) || types.includes(r.type2))
+    .map(r => r.pokemon);
+}
 
 const GEN2_NAMES = [
   "Germignon","Macronium","Méganium","Héricendre","Feurisson","Typhlosion",
@@ -1509,6 +1324,10 @@ export async function checkAchievements(userId) {
       else if (req.normalCount !== undefined) met = normalCount >= req.normalCount;
       else if (req.normalAll)    met = req.normalAll.every(n => capturedNormal.has(n));
       else if (req.totalCount  !== undefined) met = totalCount  >= req.totalCount;
+      else if (req.biomeCount?.biomeId) {
+        const names = await getSafariBiomeNames(req.biomeCount.biomeId);
+        met = names.filter(n => capturedAny.has(n)).length >= req.biomeCount.count;
+      }
       else if (req.biomeCount) met = req.biomeCount.names.filter(n => capturedAny.has(n)).length >= req.biomeCount.count;
       if (met) toUnlock.push(id);
     }
